@@ -1,13 +1,4 @@
-[![Github Profile][Jarvis1337]][Jarvis1337-url]
-[![License][license-shield]][license-url]
-[![Python Version][python]][python-url]
-[![Streamlit][streamlit]][streamlit-url]
-[![Scikit-learn][sklearn]][sklearn-url]
-[![Version][version]][version-url]
-[![Github Releases][github-releases]][github-releases-url]
-[![Github Repo Size][GH-Repo]][GH-Repo-url]
-[![Stars][stars]][stars-url]
-[![Forks][forks]][forks-url]
+
 
 *<h1 align="">🚀 Network Intrusion Detection System (NIDS) <3...</h1>*
 
@@ -207,31 +198,7 @@ streamlit run nids_app.py
 
 ---
 
-## *🛠️ Troubleshooting*
 
-> [!CAUTION]
-> ***Common Issues and Solutions:***
->
-> - ***'streamlit' is not recognized:*** *Ensure you have activated your virtual environment before running the command. If the issue persists, try running:*
->   ```bash
->   python -m streamlit run nids_app.py
->   ```
->
-> - ***Permission Denied on Windows:*** *If you cannot activate the virtual environment, run PowerShell as Administrator and execute:*
->   ```powershell
->   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
->   ```
->
-> - ***Module Import Errors:*** *Make sure all dependencies are installed correctly:*
->   ```bash
->   pip install -r requirements.txt --upgrade
->   ```
->
-> - ***No CSV files found:*** *Create the `Datasets` folder and add CSV files, or use the built-in simulated data feature*
->
-> - ***Memory Errors during training:*** *Reduce the simulated data size in the sidebar (try 1000-2000 samples) or close other applications*
-
----
 
 ## *💡 Tips for Best Results*
 
@@ -243,38 +210,3 @@ streamlit run nids_app.py
 
 ---
 
-## *🤝 Contributing*
-
-*Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/Jarvis1337/Network-Intrusion-Detection/issues).*
-
----
-
-## *📝 License*
-
-> *<h4 align="center">⭐ If this project helped you, please consider giving it a star on GitHub!</h4>*
-
----
-
-> *<h4 align="center">Network-Intrusion-Detection (NIDS) © 2026 by ~Jarvis is licensed under GNU General Public License v3.0 and Attribution 4.0 International</h4>*
-
-<!-- Badge URLs -->
-[Jarvis1337]: https://img.shields.io/badge/Github-Jarvis1337-blueviolet?style=for-the-badge&logo=github
-[Jarvis1337-url]: https://github.com/Jarvis1337
-[license-shield]: https://img.shields.io/github/license/Jarvis1337/Network-Intrusion-Detection?style=for-the-badge&logo=Github&color=E6E6FA
-[license-url]: https://github.com/Jarvis1337/Network-Intrusion-Detection/blob/master/LICENSE
-[python]: https://img.shields.io/badge/Python-3.8+-blue?style=for-the-badge&logo=python&logoColor=white
-[python-url]: https://www.python.org/
-[streamlit]: https://img.shields.io/badge/Streamlit-1.52.2-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white
-[streamlit-url]: https://streamlit.io/
-[sklearn]: https://img.shields.io/badge/Scikit--Learn-1.8.0-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white
-[sklearn-url]: https://scikit-learn.org/
-[version]: https://img.shields.io/badge/Version-v3.1.0-brightgreen?style=for-the-badge&logo=Github&label=NIDS
-[version-url]: https://github.com/Jarvis1337/Network-Intrusion-Detection/releases
-[github-releases]: https://img.shields.io/badge/Github-Releases-ff0000?style=for-the-badge&logo=github
-[github-releases-url]: https://github.com/Jarvis1337/Network-Intrusion-Detection/releases
-[GH-Repo]: https://img.shields.io/github/repo-size/Jarvis1337/Network-Intrusion-Detection?style=for-the-badge&color=00ffff&label=Repository%20Size&logo=github
-[GH-Repo-url]: https://github.com/Jarvis1337/Network-Intrusion-Detection/
-[stars]: https://img.shields.io/github/stars/Jarvis1337/Network-Intrusion-Detection?style=for-the-badge&logo=github&color=yellow
-[stars-url]: https://github.com/Jarvis1337/Network-Intrusion-Detection/stargazers
-[forks]: https://img.shields.io/github/forks/Jarvis1337/Network-Intrusion-Detection?style=for-the-badge&logo=github&color=blue
-[forks-url]: https://github.com/Jarvis1337/Network-Intrusion-Detection/network/members
