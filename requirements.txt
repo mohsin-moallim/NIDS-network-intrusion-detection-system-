@@ -1,0 +1,13 @@
+# Graticule runtime and test dependencies (Python 3.12+, tested on 3.13, Windows).
+# Exact pins keep a fresh install reproducible; see requirements-lock.txt for the full resolved set.
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.5.3
+pyarrow==25.0.1
+scikit-learn==1.9.1
+xgboost==3.4.1
+altair==6.3.0
+vl-convert-python==1.9.0.post1
+fpdf2==2.8.9
+joblib==1.6.0
+pytest==9.1.1

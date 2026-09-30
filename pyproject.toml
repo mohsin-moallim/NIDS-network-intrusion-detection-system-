@@ -1,0 +1,23 @@
+[project]
+name = "graticule"
+version = "0.1.0"
+description = "A measuring bench for training, testing and comparing network-intrusion classifiers."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "mohsin-moallim" }]
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-m \"not slow\""
+markers = [
+    "unit: fast, isolated tests of core functions",
+    "integration: multi-module tests that train small models",
+    "ui: headless Streamlit AppTest checks",
+    "realdata: needs the CIC-IDS2017 folder; skipped when it is absent",
+    "slow: long benchmarks, excluded by default (run with -m slow)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:altair.*",
+]

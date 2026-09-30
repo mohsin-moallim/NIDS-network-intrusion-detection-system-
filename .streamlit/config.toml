@@ -1,0 +1,78 @@
+# Graticule: Streamlit configuration. Colours mirror graticule/theme.py (the single source of truth).
+
+[server]
+enableStaticServing = true
+maxUploadSize = 1024
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+font = "'Atkinson Hyperlegible Next', 'Segoe UI', system-ui, sans-serif"
+headingFont = "'Instrument Sans', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif"
+codeFont = "'Atkinson Hyperlegible Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace"
+headingFontWeights = 600
+baseRadius = "small"
+showWidgetBorder = true
+
+[[theme.fontFaces]]
+family = "Instrument Sans"
+url = "app/static/fonts/InstrumentSans-Variable.ttf"
+weight = "400 700"
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Atkinson Hyperlegible Next"
+url = "app/static/fonts/AtkinsonHyperlegibleNext-Variable.ttf"
+weight = "200 800"
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Atkinson Hyperlegible Mono"
+url = "app/static/fonts/AtkinsonHyperlegibleMono-Variable.ttf"
+weight = "200 800"
+style = "normal"
+
+[theme.light]
+primaryColor = "#2A6B5A"
+backgroundColor = "#F3F1EA"
+secondaryBackgroundColor = "#FBFAF6"
+textColor = "#1B2229"
+borderColor = "#D5D1C6"
+dataframeHeaderBackgroundColor = "#FBFAF6"
+codeBackgroundColor = "#FBFAF6"
+linkColor = "#2A6B5A"
+redColor = "#A5341A"
+blueColor = "#1F5B9C"
+yellowColor = "#B08200"
+greenColor = "#2A6B5A"
+yellowBackgroundColor = "#FBEFC6"
+yellowTextColor = "#6B4E00"
+chartCategoricalColors = ["#2A6B5A", "#8C6620", "#A0508A", "#1B2229", "#5A6470"]
+chartSequentialColors = ["#F4F3EC", "#D2E0D5", "#AFCEBF", "#8DBBA9", "#6CA08E", "#46806E", "#2A6B5A", "#215648", "#184237", "#0F2F27"]
+chartDivergingColors = ["#1F5B9C", "#5F84B9", "#91B1D6", "#B9CCE1", "#DDE2E6", "#EFE0D7", "#EFC7B6", "#EAA88F", "#CC6241", "#A5341A"]
+
+[theme.dark]
+primaryColor = "#2E7A67"
+backgroundColor = "#12171C"
+secondaryBackgroundColor = "#1A2027"
+textColor = "#E4E8EC"
+borderColor = "#2E3740"
+dataframeHeaderBackgroundColor = "#1A2027"
+codeBackgroundColor = "#1A2027"
+linkColor = "#5FB39B"
+redColor = "#F2845E"
+blueColor = "#62A2DE"
+yellowColor = "#F4C63D"
+greenColor = "#2E7A67"
+greenTextColor = "#5FB39B"
+chartCategoricalColors = ["#5FB39B", "#C49A55", "#A86A98", "#E4E8EC", "#98A3AE"]
+chartSequentialColors = ["#1B2328", "#213534", "#264740", "#2A5A4C", "#367160", "#4D9480", "#5FB39B", "#8BC7B3", "#B4DCCC", "#DCF0E6"]
+chartDivergingColors = ["#62A2DE", "#4D80B0", "#3A6085", "#334A62", "#2E3944", "#3D3536", "#603F36", "#874D3A", "#BB684C", "#F2845E"]

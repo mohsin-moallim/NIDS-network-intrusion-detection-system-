@@ -1,0 +1,42 @@
+# Python environment and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.egg-info/
+
+# Local, per-machine settings (data folder path and other preferences)
+local_settings.json
+.streamlit/secrets.toml
+
+# Dataset files never belong in the repository
+data/*
+!data/README.md
+*.csv
+*.parquet
+*.pcap
+*.pcapng
+
+# Saved channel bundles and run history (kept locally, never committed)
+saved_models/*
+!saved_models/.gitkeep
+run_history/*
+!run_history/.gitkeep
+*.joblib
+*.ubj
+*.npz
+*.sqlite3
+
+# Generated reports and exports
+exports/
+*.pdf
+
+# Editors and OS clutter
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
