@@ -169,7 +169,8 @@ findings fixed.
   results) and proved by `tests/ui/test_no_retrain.py`, which changes every widget on every station after a fit and checks
   that the fit counter and the stored run object are unchanged.
 - **Honest readings.** The page warns when the loaded sample differs from the one the run was fitted on; scores are shown
-  to four decimals so 0.9995 is never rounded up to a perfect 1.000; the fit time includes building the matrices.
+  to four decimals and a score short of 1 never prints as 1.0000 (0.9999 is the ceiling below 1); the fit time
+  includes building the matrices.
 
 ## Phases 4–5 — saved channel sets, run history, Logbook; evaluation and 03 Measure (2026-10-01)
 Built concurrently by two implementers, integrated, reviewed through three lenses; 32 verified findings handled.
@@ -234,3 +235,27 @@ Built by four implementers in parallel, integrated, reviewed through three lense
   one or as a ZIP with a README.
 - **Results belong to the run that made them**: an Assay batch or a built PDF is offered only to that exact run object, so
   a fit and its loaded copy never mix their results.
+
+## Phase 9 — README, definition-of-done audit (2026-10-01)
+- **README.md** written from scratch (stations, features, how the readings stay honest, setup, dataset and citation,
+  walkthrough, channels and metrics, testing, project structure, limitations, licence and credits), with screenshot
+  placeholders described in `docs/screenshots/README.md`.
+- **Definition of done verified with evidence:** a fresh venv installs from `requirements.txt` (`pip check` clean) and the
+  app answers its health check; synthetic mode works end to end with no data folder; the no-retrain test changes 45
+  widgets across every station; binary and multi-class both run on Wednesday and on Thursday web attacks; Monday in
+  binary mode shows the single-class warning at 02 Fit and starts no job; the 200,000-row benchmark fits every tree
+  channel in under 10 s with the SVM cap stated; a saved set reloads in a separate process and predicts identically;
+  Sweep replays only held-out rows; Assay, the PDF and every CSV export work; nothing has been pushed anywhere.
+- **Distinct flows, not traffic volume.** Removing exact repeats before the split (as required) means readings count
+  each distinct flow once. Some flows are repeated thousands of times in the files (one DoS Hulk flow 9,329 times in
+  Wednesday), so a whole-file Assay can differ from the held-out readings (CH1: 0.9989 balanced accuracy held out,
+  0.9390 accuracy over the whole Wednesday file; CH2 XGBoost 0.9996). The app now says how many recorded flows the
+  held-out rows stand for, and 05 Assay recognises rows the run was trained on and reports the other rows separately.
+- **One rule each** for printing scores (four decimals, never 1.0000 below 1), for the alert (attack verdict and attack
+  probability at or above the threshold, compared in float32 at every station), and for what counts as normal traffic.
+- **Top-K ranking** is fitted through the same counted entry point as the channels, so the no-retrain test also covers it.
+- **Test-suite time.** The suite holds 589 tests; the default run (553) takes about 2.5 minutes on the test laptop, a
+  little over the 2-minute aim set in the build spec, kept rather than moving the main UI journeys out of the default
+  run; whole-file and benchmark tests run with `-m realdata` / `-m slow`.
+- **Still open for the owner:** whether CH3 should stay out of saved sets (current default) or gain an opt-in that stores
+  its support vectors in the git-ignored `saved_models/` folder.

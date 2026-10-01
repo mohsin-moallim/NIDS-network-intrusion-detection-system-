@@ -6,12 +6,26 @@ import html
 from collections.abc import Mapping, Sequence
 from numbers import Integral
 
+import pandas as pd
 import streamlit as st
 
 from graticule import theme
 from graticule.theme import Mode
 from ui import state
 from ui.stations import BY_KEY, PAGE_OBJECTS, STATIONS, UTILITIES, Station
+
+
+def shown_scores(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+    """A copy of ``frame`` whose score ``columns`` (those present) hold what four decimals should print.
+
+    Table formats round, so a reading of 0.99998 would print as a perfect 1.0000; such values are held at 0.9999
+    (:func:`graticule.theme.shown_score`). Use the copy for display only: sort and compare on the true values.
+    """
+    out = frame.copy()
+    for name in columns:
+        if name in out.columns and pd.api.types.is_numeric_dtype(out[name]):
+            out[name] = theme.shown_scores(out[name].to_numpy(dtype="float64", na_value=float("nan")))
+    return out
 
 
 def current_mode() -> Mode:

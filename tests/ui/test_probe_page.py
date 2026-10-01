@@ -215,7 +215,7 @@ def test_binary_probe_sources_verdicts_and_explanations(fresh_caches: None, monk
     assert len(calls) > before
     changed = base.copy()
     changed[2] = 100000000.0
-    assert ("verdict", *probe._run_tag(run), explain.row_digest(changed)) in at.session_state[probe.CACHE]
+    assert ("verdict", *probe._run_tag(run), explain.row_digest(changed), None) in at.session_state[probe.CACHE]
     expected = explain.score_flow(run, changed, keys)
     shown = _verdicts(at)
     for position, key in enumerate(keys):
@@ -226,7 +226,7 @@ def test_binary_probe_sources_verdicts_and_explanations(fresh_caches: None, monk
     assert not errors(at), errors(at)
     assert "Started from your earlier edits of typical flow" in _text(at)
     assert float(_editors(at)[0].value["Value"].iloc[2]) == 100000000.0
-    assert ("verdict", *probe._run_tag(run), explain.row_digest(changed)) in at.session_state[probe.CACHE]
+    assert ("verdict", *probe._run_tag(run), explain.row_digest(changed), None) in at.session_state[probe.CACHE]
     # A cleared cell is a missing value, which every channel reads like any other gap.
     _edit_cell(at, 0, None)
     assert not errors(at), errors(at)

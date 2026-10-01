@@ -15,8 +15,18 @@ _REAL_DATA_DIR: Path | None = None
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register ``--data-dir`` for real-data tests."""
-    parser.addoption("--data-dir", action="store", default=None, help="Folder with the CIC-IDS2017 CSV files.")
+    """Register ``--data-dir`` for real-data tests.
+
+    Give it as one token, ``"--data-dir=<folder>"``. Written as two arguments, pytest reads the folder as a test path
+    while it is still looking for its configuration (before this file is loaded), settles on the wrong root and then
+    rejects ``--data-dir`` as unrecognised.
+    """
+    parser.addoption(
+        "--data-dir",
+        action="store",
+        default=None,
+        help='Folder with the CIC-IDS2017 CSV files; write it as one token: "--data-dir=<folder>".',
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -33,7 +43,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def real_data_dir() -> Path:
     """Path to the real CIC-IDS2017 folder; skips the test when it is not available."""
     if _REAL_DATA_DIR is None:
-        pytest.skip("CIC-IDS2017 folder not available (set NIDS_DATA_DIR or pass --data-dir)")
+        pytest.skip('CIC-IDS2017 folder not available (set NIDS_DATA_DIR or pass "--data-dir=<folder>")')
     return _REAL_DATA_DIR
 
 

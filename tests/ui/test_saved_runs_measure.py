@@ -199,6 +199,8 @@ def _fit_save_and_measure(at: AppTest) -> dict[str, Any]:
             "reference": measure_snapshot(at), "evaluations": evaluations}
 
 
+@pytest.mark.slow  # save, reload and measure twice through the pages (about 8 s); the round trip itself is
+# covered on every run by tests/integration/test_persist.py
 def test_a_saved_fit_reloaded_in_this_session_measures_exactly_like_the_original(fresh_caches: None) -> None:
     at = new_app().run()
     fitted = _fit_save_and_measure(at)

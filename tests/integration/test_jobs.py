@@ -9,6 +9,7 @@ import threading
 import time
 import warnings
 import weakref
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import replace
 
@@ -375,7 +376,8 @@ def test_a_cancel_during_the_topk_ranking_stops_it_and_skips_every_channel(
     assert len(rounds) == 1, "the ranking stopped after its first boosting round"
     statuses = {c.key: c.status for c in job.snapshot().channels}
     assert statuses == {key: "skipped" for key in request.channels}
-    assert dict(train_mod.FIT_CALLS) == before
+    # The ranking model itself was fitted (and stopped after one round); no channel was.
+    assert Counter(train_mod.FIT_CALLS) - Counter(before) == Counter({train_mod.RANKING_KEY: 1})
 
 
 def test_warnings_from_other_threads_stay_out_of_the_notes(prepared: PreparedDataset, cleanup: list[TrainingJob],

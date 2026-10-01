@@ -3,7 +3,9 @@
 Scoring. :func:`score_flow` asks each chosen channel for its class probabilities on a single flow and combines
 them into the consensus (:func:`graticule.models.verdict.combine`): equal weight per channel, the most probable
 class, and how many channels picked that class on their own. Probabilities are tidied exactly as the trainer tidies
-the held-out readings, so a held-out flow scored here gets the verdict the run recorded for it. Nothing is fitted.
+the held-out readings, and a held-out flow named by its position takes the very readings the run stored for it (a
+neural net or logistic regression scoring one row alone can differ from its block-scored reading in the last
+float digits). Nothing is fitted.
 
 Two ways to say which features mattered:
 
@@ -39,8 +41,9 @@ import pandas as pd
 from graticule.data import sampling
 from graticule.models.train import QUANTILE_LEVELS, REFERENCE_ROWS, _tidy_proba
 from graticule.models.verdict import Consensus, alert_flags, combine
+from graticule.models.verdict import attack_probability as attack_probability_of
 from graticule.persist import deterministic
-from graticule.schema import is_benign
+from graticule.schema import is_normal_traffic
 from graticule.theme import CHANNEL_BY_KEY
 
 if TYPE_CHECKING:
@@ -137,28 +140,34 @@ class FlowVerdict:
         index = self.label_index(key) if class_index is None else int(class_index)
         return float(self.proba[key][index])
 
+    @property
+    def normal_index(self) -> int | None:
+        """Code of the normal-traffic class (BENIGN or Normal), or None when the run has none."""
+        return next((i for i, name in enumerate(self.classes) if is_normal_traffic(name)), None)
+
+    def _attack_values(self, key: str | None) -> np.ndarray:
+        """The shared attack probability (float32, one value) of channel ``key`` or (None) the consensus."""
+        values = self.consensus.proba[0] if key is None else self.proba[key]
+        return attack_probability_of(values, self.normal_index)
+
     def attack_probability(self, key: str | None = None) -> float:
         """Probability that the flow is an attack, for channel ``key`` or (None) the consensus.
 
-        Binary runs: the probability of "Attack". Multi-class runs: one minus the probability of the normal class;
-        NaN when the run has no normal class.
+        Two classes (binary runs): the probability of the attack class. More classes: one minus the probability
+        of the normal class. NaN when the run has no normal class. Computed by
+        :func:`graticule.models.verdict.attack_probability`, as at 05 Assay and 06 Sweep.
         """
-        values = self.consensus.proba[0] if key is None else self.proba[key]
-        benign = [i for i, name in enumerate(self.classes) if is_benign(name) or name == "Normal"]
-        if not benign:
+        if self.normal_index is None:
             return float("nan")
-        return float(max(0.0, 1.0 - float(np.sum(np.asarray(values, dtype=np.float64)[benign]))))
+        return float(self._attack_values(key)[0])
 
     def raises_alert(self, key: str | None, threshold: float) -> bool:
         """True when channel ``key`` (None: the consensus) raises a high-confidence alert on the flow: its verdict
         is an attack class and its attack probability is at least ``threshold`` (the rule 05 Assay and 06 Sweep
         use, :func:`graticule.models.verdict.alert_flags`)."""
         index = self.consensus_index if key is None else self.label_index(key)
-        benign = [i for i, name in enumerate(self.classes) if is_benign(name) or name == "Normal"]
-        normal = benign[0] if benign else None
         # Without a normal class every flow is read as an attack with certainty (as 05 Assay and 06 Sweep read it).
-        attack = self.attack_probability(key) if benign else 1.0
-        return bool(alert_flags(np.asarray([attack]), np.asarray([index]), normal, threshold)[0])
+        return bool(alert_flags(self._attack_values(key), np.asarray([index]), self.normal_index, threshold)[0])
 
     def top_classes(self, key: str | None = None, n: int = 3) -> list[tuple[str, float]]:
         """The ``n`` most probable classes (name, probability) for channel ``key`` or (None) the consensus."""
@@ -395,12 +404,30 @@ def background_for(run: "TrainingRun") -> tuple[np.ndarray, str]:
 # --------------------------------------------------------------------------------------------------------------
 # Scoring one flow, and typical flows
 # --------------------------------------------------------------------------------------------------------------
-def score_flow(run: "TrainingRun", x_row: np.ndarray, channels: Sequence[str]) -> FlowVerdict:
+def _stored_reading(run: "TrainingRun", key: str, row: np.ndarray, test_index: int | None) -> np.ndarray | None:
+    """The probabilities channel ``key`` recorded for held-out row ``test_index`` when the run was scored, or None
+    when there is no such row, the row holds other values than ``row``, or the channel kept no readings."""
+    if test_index is None:
+        return None
+    X_test = run.data.X_test
+    index = int(test_index)
+    stored = run.channels[key].proba
+    if not 0 <= index < len(X_test) or stored is None or len(stored) != len(X_test):
+        return None
+    if not np.array_equal(np.asarray(X_test[index], dtype=np.float32), row[0], equal_nan=True):
+        return None
+    return np.asarray(stored[index], dtype=np.float32).copy()
+
+
+def score_flow(run: "TrainingRun", x_row: np.ndarray, channels: Sequence[str], *,
+               test_index: int | None = None) -> FlowVerdict:
     """Score one flow with the chosen fitted channels of ``run`` and combine them into the consensus.
 
     Channels that are not fitted in the run are left out; ``ValueError`` when none remains or the flow has the
     wrong number of values. Probabilities are tidied as the trainer tidies the held-out readings (float32, in
-    class-code order, rows summing to 1), so a held-out flow gets the verdict stored for it. Nothing is fitted.
+    class-code order, rows summing to 1). When ``test_index`` names the held-out row the flow came from (and the
+    values match it), each channel's reading is the one stored for that row when the run was scored, so the flow
+    gets exactly the verdict 03 Measure counted. Any other flow is scored now. Nothing is fitted.
     """
     wanted = {str(k) for k in channels}
     keys = tuple(k for k in run.ok_channels() if k in wanted)
@@ -410,6 +437,10 @@ def score_flow(run: "TrainingRun", x_row: np.ndarray, channels: Sequence[str]) -
     row = _as_row(x_row, len(run.data.feature_names))
     proba: dict[str, np.ndarray] = {}
     for key in keys:
+        stored = _stored_reading(run, key, row, test_index)
+        if stored is not None:
+            proba[key] = stored
+            continue
         estimator = run.channels[key].estimator
         # One flow: a forest sums its trees on one thread (reproducible to the last bit, and much quicker than
         # starting a pool of threads for a single row).

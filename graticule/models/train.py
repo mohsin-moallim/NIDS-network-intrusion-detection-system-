@@ -17,8 +17,9 @@ Order of work (each step looks only at what it is allowed to see, so nothing lea
    column), and the report counts test rows whose K-column vector also occurs among the training rows.
 
 Then :func:`train_all` fits each requested channel in the fixed channel order. :func:`fit_model` is the only place
-any estimator is fitted; it counts its calls in :data:`FIT_CALLS` (tests spy on it). A channel that fails is
-recorded as failed with its error and the run carries on with the next one.
+any estimator is fitted, the Top-K ranking model included (under the key :data:`RANKING_KEY`); it counts its calls
+in :data:`FIT_CALLS` (tests spy on it). A channel that fails is recorded as failed with its error and the run
+carries on with the next one.
 
 Cancelling. The cancel token is checked between channels, forest chunks, boosting rounds (also those of the Top-K
 ranking), MLP epochs, logistic-regression iterations and batches of test rows being scored, so a cancel takes
@@ -95,9 +96,13 @@ ConflictPolicy = Literal["keep", "majority", "drop"]
 ChannelStatus = Literal["ok", "failed", "cancelled", "skipped", "not_saved"]
 RunOrigin = Literal["fitted", "loaded"]
 
-#: Calls of :func:`fit_model` per channel key (one per channel fit). Tests read and reset it.
+#: Calls of :func:`fit_model` per key: one per channel fit, and one under :data:`RANKING_KEY` per Top-K ranking.
+#: Tests read and reset it.
 FIT_CALLS: Counter[str] = Counter()
 _FIT_CALLS_LOCK = threading.Lock()
+#: The :data:`FIT_CALLS` key of the small XGBoost model that ranks features for Top-K
+#: (:func:`graticule.features.rank_features`, fitted through :func:`fit_model` like every other model).
+RANKING_KEY = "topk_ranking"
 
 #: Training rows kept for explanations (rare-aware draw).
 REFERENCE_ROWS = 2_000
@@ -195,6 +200,8 @@ class TrainingData:
     in ``feature_names`` order; ``y_*`` are int64 codes into ``classes``. ``reports`` holds plain values: ``rows``,
     ``target`` (classes and dropped classes), ``model_space_duplicates`` (per class), ``conflicts``,
     ``topk_overlap`` (None unless top-K), ``class_counts_train``/``class_counts_test`` and ``seconds``.
+    ``test_copies`` (int64 per held-out row, or None when the sample carries no counts) is how many rows of the
+    source files each held-out row stands for, once every exact repeat (also over the chosen columns) is counted.
     """
 
     X_train: np.ndarray
@@ -208,6 +215,7 @@ class TrainingData:
     train_rows: np.ndarray
     test_rows: np.ndarray
     reports: dict[str, Any] = field(default_factory=dict)
+    test_copies: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def n_classes(self) -> int:
@@ -518,6 +526,10 @@ def build_training_data(
     full_hashes = hashes_with_labels(feature_hashes, pd.Series(names, dtype="str"))
     keep = first_occurrences(full_hashes)
     copies = copies_per_kept_row(full_hashes, keep)
+    # How many rows of the source files each kept row stands for (repeats removed at 01 Sample and here).
+    base = getattr(prepared, "copies", None)
+    flow_copies = (copies_per_kept_row(full_hashes, keep, np.asarray(base, dtype=np.int64)[positions])
+                   if base is not None and len(base) == len(frame) else None)
     removed = names[~keep]
     duplicates = {
         "columns": len(space),
@@ -537,6 +549,8 @@ def build_training_data(
         "rows_removed": int((~survive).sum()),
     }
     positions, names = positions[survive], names[survive]
+    if flow_copies is not None:
+        flow_copies = flow_copies[survive]
     _check(cancel)
 
     # Classes may have shrunk below their minimum: check them again on the rows that are left.
@@ -548,6 +562,8 @@ def build_training_data(
             "After removing rows that repeat over the chosen feature columns, fewer than two classes have enough "
             f"rows. {exc}", exc.present, exc.dropped) from exc
     positions = positions[final.keep]
+    if flow_copies is not None:
+        flow_copies = np.asarray(flow_copies, dtype=np.int64)[final.keep]
     codes = final.codes
     classes = tuple(final.classes)
     dropped_after = dict(final.dropped)
@@ -643,6 +659,7 @@ def build_training_data(
         X_train=X_train, X_test=X_test, y_train=y_train, y_test=y_test, classes=classes,
         detailed_test_labels=detailed, feature_names=columns, feature_choice=choice,
         train_rows=train_rows.astype(np.int64), test_rows=test_rows.astype(np.int64), reports=reports,
+        test_copies=None if flow_copies is None else flow_copies[split.test],
     )
 
 
@@ -878,7 +895,7 @@ def _fit_plain(key: str, estimator: Pipeline, X: np.ndarray, y: np.ndarray, w: n
 
 def fit_model(
     key: str,
-    estimator: Pipeline,
+    estimator: Any,
     X: np.ndarray,
     y: np.ndarray,
     sample_weight: np.ndarray,
@@ -890,12 +907,14 @@ def fit_model(
 ) -> tuple[Any, dict[str, Any]]:
     """Fit channel ``key`` on the training rows and return (fitted model, info). The ONLY place models are fitted.
 
-    Every call adds one to ``FIT_CALLS[key]``. Channel specifics: the forest grows in warm-start chunks of 25 trees;
-    XGBoost holds back a stratified 10 % of the rows for early stopping (its callback holds only plain values and
-    is removed from the fitted model); the SVM trains on at most ``ctx.effective_svm_cap`` rows (rare-aware draw)
-    and returns a ``CalibratedClassifierCV(FrozenEstimator(pipeline), method="sigmoid")`` fitted, over one split,
-    on up to 5,000 other training rows drawn rare-aware (see :func:`_calibration_take`); the MLP and logistic
-    regression report every epoch or iteration. When the SVM sees a subset, balanced weights are recomputed on that
+    Every call adds one to ``FIT_CALLS[key]``. ``key`` :data:`RANKING_KEY` fits the Top-K ranking model (any
+    estimator with ``fit(X, y, sample_weight=...)``, used as it is). Channel specifics: the forest grows in
+    warm-start chunks of 25 trees; XGBoost holds back a stratified 10 % of the rows for early stopping (its callback
+    holds only plain values and is removed from the fitted model); the SVM trains on at most
+    ``ctx.effective_svm_cap`` rows (rare-aware draw) and returns a
+    ``CalibratedClassifierCV(FrozenEstimator(pipeline), method="sigmoid")`` fitted, over one split, on up to 5,000
+    other training rows drawn rare-aware (see :func:`_calibration_take`); the MLP and logistic regression report
+    every epoch or iteration. When the SVM sees a subset, balanced weights are recomputed on that
     subset (unit weights stay unit). ``info`` holds ``rows_used``, ``notes`` (including the warnings raised on this
     thread during the fit, see :func:`graticule.models.jobs.thread_warnings`) and ``extra``.
 
@@ -914,9 +933,13 @@ def fit_model(
     try:
         with thread_warnings() as caught:
             _check(cancel)
-            if key == "forest":
-                info = _fit_forest(estimator, X, y, weights, ctx, progress, cancel)
+            if key == RANKING_KEY:
+                estimator.fit(X, y, sample_weight=weights)
+                info = {"rows_used": len(y), "notes": [], "extra": {}}
                 fitted: Any = estimator
+            elif key == "forest":
+                info = _fit_forest(estimator, X, y, weights, ctx, progress, cancel)
+                fitted = estimator
             elif key == "xgboost":
                 info = _fit_xgboost(estimator, X, y, weights, ctx, hook_id)
                 fitted = estimator

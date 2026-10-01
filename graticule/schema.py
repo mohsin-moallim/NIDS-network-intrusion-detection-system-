@@ -221,3 +221,13 @@ def normalize_label(raw: object) -> str:
 def is_benign(label: str) -> bool:
     """True when ``label`` names normal traffic."""
     return label.strip().upper() == BENIGN
+
+
+def is_normal_traffic(label: str) -> bool:
+    """True when ``label`` names normal traffic under either naming: ``BENIGN`` (the dataset's label) or ``Normal``
+    (the binary target's name, also used by some other flow files), in any letter case.
+
+    Every part of Graticule that asks "is this class normal traffic?" uses this one test, so a file labelled
+    "Normal" is read the same way when it is fitted, scored, streamed or explained.
+    """
+    return str(label).strip().upper() in (BENIGN, NORMAL.upper())

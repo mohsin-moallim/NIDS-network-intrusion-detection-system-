@@ -50,7 +50,7 @@ from graticule.models.jobs import CancelToken, TrainingCancelled
 from graticule.models.verdict import ALERT_RULE
 from graticule.report.exports import belongs_to_run, consensus_metrics
 from graticule.schema import CURATED
-from graticule.theme import CHANNEL_BY_KEY, FONT_BODY, FONT_FILES, FONT_HEADING, FONT_MONO, LIGHT
+from graticule.theme import CHANNEL_BY_KEY, FONT_BODY, FONT_FILES, FONT_HEADING, FONT_MONO, LIGHT, score_text
 
 if TYPE_CHECKING:
     from graticule.data.prepare import PreparedDataset
@@ -157,6 +157,11 @@ class AssaySummary:
     unseen_labels: dict[str, int]
     alert_threshold: float | None = None
     source_name: str = ""
+    rows_seen_in_training: int | None = None
+    unseen_accuracy: float | None = None
+    unseen_balanced_accuracy: float | None = None
+    rows_unseen_measured: int = 0
+    from_sample_file: bool = False
 
 
 @dataclass(frozen=True)
@@ -254,6 +259,11 @@ def summarise_assay(batch: Any) -> AssaySummary | None:
         unseen_labels={str(k): int(v) for k, v in dict(unseen).items()},
         alert_threshold=_number(getattr(batch, "alert_threshold", None)),
         source_name=str(getattr(batch, "source_name", "") or ""),
+        rows_seen_in_training=_whole(getattr(batch, "rows_seen_in_training", None)),
+        unseen_accuracy=_number(getattr(batch, "unseen_accuracy", None)),
+        unseen_balanced_accuracy=_number(getattr(batch, "unseen_balanced_accuracy", None)),
+        rows_unseen_measured=int(_whole(getattr(batch, "rows_unseen_measured", 0)) or 0),
+        from_sample_file=bool(getattr(batch, "from_sample_file", False)),
     )
 
 
@@ -398,9 +408,9 @@ def _rgb(colour: str) -> tuple[int, int, int]:
 
 
 def _score(value: Any) -> str:
-    """A score with four decimals, or "n/a"."""
-    number = _number(value)
-    return "n/a" if number is None else f"{number:.4f}"
+    """A score with four decimals, or "n/a"; a score short of 1 never prints as 1.0000 (see
+    :func:`graticule.theme.score_text`)."""
+    return score_text(_number(value))
 
 
 def _count(value: Any) -> str:
@@ -823,7 +833,7 @@ class _Builder:
         best = self._best()
         best_text = "n/a"
         if best is not None:
-            best_text = f"{evaluate.channel_label(best[0])}, balanced accuracy {best[1]:.4f}"
+            best_text = f"{evaluate.channel_label(best[0])}, balanced accuracy {_score(best[1])}"
         fitted = [evaluate.channel_label(k) for k in run.ok_channels()]
         others = [f"{evaluate.channel_label(k)} ({r.status.replace('_', ' ')})" for k, r in run.channels.items()
                   if k not in run.ok_channels()]
@@ -1248,7 +1258,7 @@ class _Builder:
             mean, std = _number(row.get(f"{stem} mean")), _number(row.get(f"{stem} std"))
             if mean is None:
                 return "n/a"
-            return f"{mean:.4f} ± {std:.4f}" if std is not None else f"{mean:.4f}"
+            return f"{_score(mean)} ± {std:.4f}" if std is not None else _score(mean)
 
         rows = [[str(r["Channel"]), _count(r["Folds"]), spread(r, "Balanced accuracy"), spread(r, "Accuracy"),
                  spread(r, "F1 macro"), _seconds(r.get("Fit s mean"))] for _, r in cv.iterrows()]
@@ -1283,6 +1293,16 @@ class _Builder:
             lines.append(("Labels the run never saw", "; ".join(f"{k} ({v:,} rows)"
                                                                  for k, v in summary.unseen_labels.items())
                           + " (left out of the accuracy)"))
+        if summary.rows_seen_in_training:
+            lines.append(("Rows the run trained on", f"{summary.rows_seen_in_training:,} of {summary.rows:,} repeat a "
+                          "training row (over the channels' columns)"))
+            if summary.unseen_accuracy is not None and summary.unseen_balanced_accuracy is not None:
+                lines.append(("Other rows", f"accuracy {_score(summary.unseen_accuracy)}, balanced accuracy "
+                              f"{_score(summary.unseen_balanced_accuracy)} on {summary.rows_unseen_measured:,} "
+                              "labelled rows it never trained on"))
+        if summary.from_sample_file:
+            lines.append(("Note", "this file is one the run's sample was drawn from, so its accuracy is not a "
+                                  "reading on unseen traffic"))
         self.facts(lines)
         if summary.attacks_found is not None:
             self.marked_line([("attack", f"{summary.attacks_found:,} flows read as attacks")], size=9.2, gap=1.0)
@@ -1340,12 +1360,19 @@ class _Builder:
             "the readings.",
             "Exact repeats were removed before the split (within and across files, then again over the chosen "
             "columns), but near-identical flows can still sit on both sides of it and flatter the readings.",
+            "Readings count each distinct flow once, however often it was recorded. A whole file scored row by "
+            "row counts every repeat, so a channel that misses a much-repeated flow reads lower on the file than "
+            "on its held-out rows.",
             "Accuracy follows the largest class; balanced accuracy weighs every class equally, which is why it is "
             "listed first.",
             "Probabilities are those of each model as fitted. Only CH3 is calibrated (on training rows it did not "
             "fit on), so an alert threshold is not a guaranteed error rate for any channel.",
             "Times are wall-clock seconds on the machine that fitted the run and vary between runs.",
         ]
+        repeats = evaluate.held_out_repeats(run)
+        if repeats and repeats["flows"] > repeats["rows"]:
+            items.append(f"The {repeats['rows']:,} held-out rows stand for {repeats['flows']:,} recorded flows once "
+                         f"repeats are counted; the most repeated one for {repeats['largest']:,}.")
         overlap = (run.data.reports or {}).get("topk_overlap")
         if isinstance(overlap, Mapping) and overlap.get("test_rows"):
             items.append(f"Top-K columns: {int(overlap.get('test_rows_seen_in_train', 0)):,} of "

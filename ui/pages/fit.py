@@ -17,7 +17,7 @@ from graticule.data.prepare import PreparedDataset
 from graticule.data.sampling import SingleClassError, target_for_mode
 from graticule.features import DEFAULT_K, FEATURE_MODES, select_features
 from graticule.models.train import TrainingRun, TrainRequest
-from graticule.schema import is_benign
+from graticule.schema import is_normal_traffic
 from graticule.settings import SVM_CAP_RANGE, AppSettings
 from ui import components, state, training_ui
 
@@ -59,7 +59,7 @@ def _sample_line(prepared: PreparedDataset) -> None:
     else:
         source = f"{len(request.files)} CIC-IDS2017 file{'s' if len(request.files) != 1 else ''}"
     counts = prepared.class_counts
-    normal = sum(n for name, n in counts.items() if is_benign(name))
+    normal = sum(n for name, n in counts.items() if is_normal_traffic(name))
     attack = sum(counts.values()) - normal
     merged = ", Web Attack types merged" if request.merge_web_attacks else ""
     st.markdown(

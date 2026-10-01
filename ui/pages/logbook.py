@@ -154,7 +154,8 @@ def bundle_table(bundles: list[persist.BundleSummary]) -> pd.DataFrame:
 
 def _bundle_label(summary: persist.BundleSummary) -> str:
     """Option text for one saved set."""
-    best = (f", best {summary.best_balanced_accuracy:.4f}" if summary.best_balanced_accuracy is not None else "")
+    best = (f", best {theme.score_text(summary.best_balanced_accuracy)}"
+            if summary.best_balanced_accuracy is not None else "")
     refused = ", will be refused" if getattr(summary, "problem", None) else ""
     return f"{summary.run_id} ({_mode_text(summary.mode)}, {summary.source}{best}{refused})"
 
@@ -254,7 +255,8 @@ def _bundles_section(current: TrainingRun | None) -> None:
         _unreadable_note(unreadable)
         return
     st.dataframe(
-        bundle_table(bundles), hide_index=True, width="stretch",
+        components.shown_scores(bundle_table(bundles), ("Best balanced accuracy",)), hide_index=True,
+        width="stretch",
         column_config={
             "Rows": st.column_config.NumberColumn("Rows", format="localized", help="Training plus test rows."),
             "Best balanced accuracy": st.column_config.NumberColumn("Best balanced accuracy", format="%.4f"),
@@ -331,7 +333,8 @@ def _history_section() -> None:
         st.caption("No fits recorded yet. Every fit finished at 02 Fit adds a line here.")
         return
     st.dataframe(
-        history_table(frame), hide_index=True, width="stretch",
+        components.shown_scores(history_table(frame), ("Best balanced accuracy",)), hide_index=True,
+        width="stretch",
         column_config={
             "Train rows": st.column_config.NumberColumn("Train rows", format="localized"),
             "Test rows": st.column_config.NumberColumn("Test rows", format="localized"),

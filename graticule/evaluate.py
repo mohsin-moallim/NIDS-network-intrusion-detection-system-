@@ -526,6 +526,31 @@ def held_out_counts(run: "TrainingRun") -> dict[str, int]:
     return {name: int(counts[i]) for i, name in enumerate(classes)}
 
 
+def held_out_repeats(run: "TrainingRun") -> dict[str, int] | None:
+    """How much recorded traffic the held-out rows stand for, or None when the run carries no repeat counts.
+
+    Exact repeats are merged before the split, so every held-out row is one distinct flow and every reading counts
+    it once, however often it occurred in the files. Returns ``rows`` (held-out rows), ``flows`` (rows of the
+    source files they stand for, repeats included), ``largest`` (the most any one row stands for) and
+    ``repeated`` (held-out rows standing for more than one recorded flow).
+    """
+    copies = getattr(run.data, "test_copies", None)
+    if copies is None or len(copies) == 0 or len(copies) != len(run.data.y_test):
+        return None
+    values = np.asarray(copies, dtype=np.int64)
+    return {"rows": int(len(values)), "flows": int(values.sum()), "largest": int(values.max()),
+            "repeated": int((values > 1).sum())}
+
+
+def repeats_sentence(repeats: Mapping[str, int] | None) -> str | None:
+    """Plain words on what a held-out row stands for (see :func:`held_out_repeats`); None when nothing repeats."""
+    if not repeats or repeats.get("flows", 0) <= repeats.get("rows", 0):
+        return None
+    return (f"Each held-out row is a distinct flow: exact repeats were merged before the split, so these "
+            f"{repeats['rows']:,} rows stand for {repeats['flows']:,} recorded flows (one of them for "
+            f"{repeats['largest']:,}). Every reading counts a distinct flow once. A whole file scored at 05 Assay "
+            "counts every repeat, so a channel that misses a much-repeated flow reads lower there than here.")
+
 
 # --------------------------------------------------------------------------------------------------------------
 # Comparison tables
@@ -1131,8 +1156,9 @@ __all__ = [
     "CHANNEL_ORDER", "CVPlan", "ChannelEvaluation", "EvaluationTask", "TaskSnapshot", "cached_evaluations",
     "channel_label", "class_curves", "classification_metrics", "cross_validate_run", "cv_fold_frame",
     "downsample_curve", "estimate_cv_seconds", "evaluate_channel", "evaluate_run", "forget_task", "get_task",
-    "has_test_rows", "held_out_counts", "leaderboard", "native_importance", "normalise_rows", "per_class_frame",
+    "has_test_rows", "held_out_counts", "held_out_repeats", "leaderboard", "native_importance", "normalise_rows",
+    "per_class_frame",
     "per_class_metrics", "permutation_importance_for", "permutation_plan", "plan_cross_validation",
     "quick_metrics", "remember_cross_validation", "remember_permutation", "score_columns",
-    "single_flow_latency_ms", "stored_cross_validation", "stored_permutations",
+    "repeats_sentence", "single_flow_latency_ms", "stored_cross_validation", "stored_permutations",
 ]

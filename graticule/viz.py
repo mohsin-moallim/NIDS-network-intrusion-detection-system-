@@ -17,7 +17,7 @@ import altair as alt
 import numpy as np
 import pandas as pd
 
-from graticule.schema import is_benign
+from graticule.schema import is_normal_traffic
 from graticule.theme import (
     ATTACK_TYPES,
     CHANNEL_BY_KEY,
@@ -30,6 +30,7 @@ from graticule.theme import (
     ChannelStyle,
     Mode,
     palette,
+    score_text,
 )
 
 AnyChart = Union[alt.Chart, alt.LayerChart, alt.VConcatChart, alt.HConcatChart, alt.ConcatChart, alt.FacetChart]
@@ -106,7 +107,7 @@ def _layer(*charts: alt.Chart) -> alt.LayerChart:
 
 def kind_of(label: str) -> str:
     """Return the traffic kind of a class: ``Normal`` for benign labels, ``Attack`` for everything else."""
-    return KIND_NORMAL if is_benign(label) or label == KIND_NORMAL else KIND_ATTACK
+    return KIND_NORMAL if is_normal_traffic(label) else KIND_ATTACK
 
 
 def kind_encodings(mode: Mode = "light", *, field: str = "kind") -> tuple[alt.Color, alt.Shape]:
@@ -433,7 +434,7 @@ def leaderboard_chart(
             if value is None or not np.isfinite(float(value)):
                 continue
             rows.append({"channel": labels[key], "metric": metric, "value": float(value),
-                         "shown": f"{float(value):.4f}"})
+                         "shown": score_text(value)})
     data = pd.DataFrame(rows, columns=["channel", "metric", "value", "shown"])
     domain = score_domain(list(data["value"]))
     colour, shape, _ = channel_encodings(mode, keys, legend=True)
@@ -656,7 +657,7 @@ def _overlay(
     anchors = pd.DataFrame({
         "channel": labels,
         "y": [_end_point(curves[k], x_col, y_col, right if kind == "roc" else None) for k in keys],
-        "text": [f"{label} {float(scores[k]):.4f}" if scores and k in scores and np.isfinite(scores[k]) else label
+        "text": [f"{label} {score_text(scores[k])}" if scores and k in scores and np.isfinite(scores[k]) else label
                  for k, label in zip(keys, labels)],
     })
     layers.extend(_gutter_labels(anchors, x_scale, y_scale, colour, shape, x_value=right, height=height))
@@ -796,7 +797,7 @@ def class_curves_chart(
     anchors = pd.DataFrame({
         "class": names,
         "y": [_end_point(curves[n], x_col, y_col, x_domain[1] if kind == "roc" else None) for n in names],
-        "text": [f"{n} {float(scores[n]):.4f}" if scores and n in scores and np.isfinite(scores[n]) else n
+        "text": [f"{n} {score_text(scores[n])}" if scores and n in scores and np.isfinite(scores[n]) else n
                  for n in names],
     })
     layers.extend(_gutter_labels(anchors, x_scale, y_scale, colour, shape, x_value=x_domain[1], height=height,
@@ -959,7 +960,7 @@ def cv_spread_chart(
         std = float(record[std_col])
         std = std if np.isfinite(std) else 0.0
         rows.append({"channel": style.label, "mean": mean, "lo": mean - std, "hi": min(mean + std, 1.0),
-                     "shown": f"{mean:.4f} ± {std:.4f}"})
+                     "shown": f"{score_text(mean)} ± {std:.4f}"})
     data = pd.DataFrame(rows, columns=["channel", "mean", "lo", "hi", "shown"])
     field = CV_METRIC_FIELDS.get(metric)
     fold_data = pd.DataFrame({"channel": pd.Series([], dtype="str"), "value": pd.Series([], dtype="float64")})

@@ -180,7 +180,7 @@ def test_a_curated_copy_of_a_non_curated_column_is_kept() -> None:
     assert top.dropped_degenerate == ("Bwd PSH Flags", "Fwd PSH Flags")
 
 
-@pytest.mark.parametrize("mode", ["binary", "multiclass"])
+@pytest.mark.parametrize("mode", ["binary", pytest.param("multiclass", marks=pytest.mark.slow)])
 def test_sample_to_training_matrix(prepared: dict[str, PreparedDataset], mode: str) -> None:
     """The steps 02 Fit will take: target, split, ranking on the training part only, top-K selection."""
     ds = prepared["drop"]

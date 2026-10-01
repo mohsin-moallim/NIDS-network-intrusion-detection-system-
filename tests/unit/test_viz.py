@@ -85,7 +85,9 @@ def _all_charts(board: pd.DataFrame, mode: str) -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize("mode", MODES)
+# The dark palette is the same specs with other colours (each colour is checked by the tests above): its full pass
+# runs with the slow tests.
+@pytest.mark.parametrize("mode", [pytest.param(m, marks=pytest.mark.slow) if m == "dark" else m for m in MODES])
 def test_every_chart_builds_and_serialises(board: pd.DataFrame, mode: str) -> None:
     charts = _all_charts(board, mode)
     for name, chart in charts.items():

@@ -28,7 +28,7 @@ from graticule.data.prepare import FILE_COL, ROW_COL, SYNTHETIC_FILE, PreparedDa
 from graticule.explain import Explanation, FlowVerdict
 from graticule.models.train import TrainingRun
 from graticule.models.verdict import ALERT_RULE
-from graticule.schema import is_benign
+from graticule.schema import is_normal_traffic
 from graticule.theme import Mode
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
@@ -101,7 +101,7 @@ def _cached(key: tuple[Any, ...], compute: Callable[[], Any]) -> Any:
 
 def _class_text(name: str) -> str:
     """A class name with its shape cue: ``"○ Normal"`` (or ``"○ BENIGN"``) and ``"◆ DoS Hulk"``."""
-    glyph = theme.GLYPH_NORMAL if is_benign(name) or name == "Normal" else theme.GLYPH_ATTACK
+    glyph = theme.GLYPH_NORMAL if is_normal_traffic(name) else theme.GLYPH_ATTACK
     return f"{glyph} {name}"
 
 
@@ -401,8 +401,10 @@ def _flow_section(run: TrainingRun, prepared: PreparedDataset | None) -> _Flow |
 def _verdict_for(run: TrainingRun, flow: _Flow) -> FlowVerdict:
     """Every fitted channel's reading of the flow (scored once per flow and run, then re-read)."""
     digest = explain.row_digest(flow.values)
-    return _cached(("verdict", *_run_tag(run), digest),
-                   lambda: explain.score_flow(run, flow.values, run.ok_channels()))
+    # A held-out flow takes the readings the run stored for its row, so the verdict is exactly the one 03 Measure
+    # counted; any other flow is scored now.
+    return _cached(("verdict", *_run_tag(run), digest, flow.test_index),
+                   lambda: explain.score_flow(run, flow.values, run.ok_channels(), test_index=flow.test_index))
 
 
 def _top_text(verdict: FlowVerdict, key: str | None) -> str:
@@ -500,7 +502,7 @@ def _directions(run: TrainingRun, class_name: str) -> tuple[str, str, bool]:
     """Legend labels (towards, away) and whether "towards" means normal traffic, for the explained class."""
     if _is_binary(run):
         return "Towards Attack", "Towards Normal", False
-    if is_benign(class_name) or class_name == "Normal":
+    if is_normal_traffic(class_name):
         return f"Towards {class_name} (normal)", f"Away from {class_name}", True
     return f"Towards {class_name}", f"Away from {class_name}", False
 

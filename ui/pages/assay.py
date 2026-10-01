@@ -27,7 +27,7 @@ from graticule.evaluate import EvaluationTask
 from graticule.models.jobs import CancelToken, JobBusyError, slot_holder, sync_training_requested
 from graticule.models.train import TrainingRun
 from graticule.scoring import ScoredBatch
-from graticule.theme import GLYPH_ALERT, GLYPH_ATTACK, verdict_text
+from graticule.theme import GLYPH_ALERT, GLYPH_ATTACK, score_text, verdict_text
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 from ui.training_ui import format_elapsed
@@ -305,10 +305,19 @@ def _cards(batch: ScoredBatch) -> None:
          "Note": f"{speed:,.0f} flows/s predicting" if speed else "reading and scoring"},
     ]
     if batch.accuracy is not None and batch.balanced_accuracy is not None:
-        cards.append({"Reading": "Accuracy", "Value": f"{batch.accuracy:.4f}",
+        cards.append({"Reading": "Accuracy", "Value": score_text(batch.accuracy),
                       "Note": f"on {batch.rows_measured:,} labelled rows"})
-        cards.append({"Reading": "Balanced accuracy", "Value": f"{batch.balanced_accuracy:.4f}",
+        cards.append({"Reading": "Balanced accuracy", "Value": score_text(batch.balanced_accuracy),
                       "Note": "mean recall over the classes"})
+    if batch.rows_seen_in_training:
+        cards.append({"Reading": "Rows the run trained on", "Value": batch.rows_seen_in_training,
+                      "Note": "repeat a training row over the channels' columns"})
+        if batch.unseen_accuracy is not None and batch.unseen_balanced_accuracy is not None:
+            cards.append({"Reading": "Accuracy, other rows", "Value": score_text(batch.unseen_accuracy),
+                          "Note": f"on {batch.rows_unseen_measured:,} labelled rows it never trained on"})
+            cards.append({"Reading": "Balanced accuracy, other rows",
+                          "Value": score_text(batch.unseen_balanced_accuracy),
+                          "Note": "the same rows, mean recall over the classes"})
     components.reading_cards(cards)
 
 

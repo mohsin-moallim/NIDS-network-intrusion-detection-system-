@@ -1,13 +1,17 @@
 """Visual tokens for Graticule, kept in one place so the UI, the charts and the PDF agree.
 
 Streamlit only exposes a handful of theme keys, so every colour the app needs (semantic colours for normal and
-attack traffic, channel styles, chart ramps) is defined here and read by whichever layer draws something.
+attack traffic, channel styles, chart ramps) is defined here and read by whichever layer draws something. So is the
+rule for printing a score (:func:`score_text`): four decimals, and never a perfect 1.0000 for a reading short of 1.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
+
+import numpy as np
 
 Mode = Literal["light", "dark"]
 
@@ -136,6 +140,45 @@ FONT_FILES: dict[str, str] = {
 
 def verdict_text(label: str, benign_label: str = "BENIGN") -> str:
     """Return a verdict with its shape glyph, e.g. ``"○ Normal"`` or ``"◆ DoS Hulk"``."""
-    if label in (benign_label, "Normal"):
+    if label in (benign_label, "Normal") or str(label).strip().upper() in ("BENIGN", "NORMAL"):
         return f"{GLYPH_NORMAL} Normal"
     return f"{GLYPH_ATTACK} {label}"
+
+
+# Scores (accuracy, balanced accuracy, precision, recall, F1, ROC-AUC, average precision) are printed with four
+# decimals. Rounding alone would print every value from 0.99995 up as a perfect 1.0000, so a score short of 1 is
+# held at 0.9999 instead: 1.0000 on screen or in the record always means exactly 1.
+SCORE_DECIMALS = 4
+#: The largest score shown for a reading that is not perfect.
+BELOW_PERFECT = 0.9999
+
+
+def shown_score(value: float) -> float:
+    """The value a score is printed as: ``value`` itself, except that a score in [0.9999, 1) becomes 0.9999.
+
+    Printed with four decimals, the result never reads 1.0000 unless ``value`` is exactly 1 (or more). NaN and
+    infinities pass through unchanged.
+    """
+    number = float(value)
+    return BELOW_PERFECT if BELOW_PERFECT <= number < 1.0 else number
+
+
+def shown_scores(values: Any) -> np.ndarray:
+    """:func:`shown_score` for every value of an array (float64 copy; NaN stays NaN)."""
+    array = np.array(values, dtype=np.float64, copy=True)
+    with np.errstate(invalid="ignore"):
+        array[(array >= BELOW_PERFECT) & (array < 1.0)] = BELOW_PERFECT
+    return array
+
+
+def score_text(value: Any, missing: str = "n/a") -> str:
+    """A score with four decimals (see :func:`shown_score`), or ``missing`` for None, NaN or a non-number."""
+    if value is None or isinstance(value, bool):
+        return missing
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return missing
+    if not math.isfinite(number):
+        return missing
+    return f"{shown_score(number):.{SCORE_DECIMALS}f}"

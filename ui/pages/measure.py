@@ -33,7 +33,7 @@ from graticule import evaluate, theme, viz
 from graticule.evaluate import ChannelEvaluation, EvaluationTask
 from graticule.models.jobs import JobBusyError, slot_holder, sync_training_requested
 from graticule.models.train import TrainingRun
-from graticule.schema import is_benign
+from graticule.schema import is_normal_traffic
 from graticule.theme import Mode
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
@@ -109,7 +109,7 @@ def duration_text(seconds: float) -> str:
 
 def class_text(name: str) -> str:
     """A class name with its shape cue: ``"○ BENIGN"``, ``"○ Normal"`` or ``"◆ DoS Hulk"``."""
-    glyph = theme.GLYPH_NORMAL if is_benign(name) or name == "Normal" else theme.GLYPH_ATTACK
+    glyph = theme.GLYPH_NORMAL if is_normal_traffic(name) else theme.GLYPH_ATTACK
     return f"{glyph} {name}"
 
 
@@ -346,16 +346,19 @@ def _score_config(columns: Sequence[str]) -> dict[str, Any]:
 def _overview(run: TrainingRun, evals: dict[str, ChannelEvaluation], board: pd.DataFrame, mode: Mode) -> None:
     """(1) The leaderboard, its dot plot and the held-out class distribution."""
     st.subheader("Readings overview", anchor=False)
-    shown = board.drop(columns=["key", "Training rows"])
+    shown = components.shown_scores(board.drop(columns=["key", "Training rows"]), viz.SCORE_COLUMNS)
     st.dataframe(shown, hide_index=True, width="stretch", column_config=_score_config(list(shown.columns)))
     note = svm_rows_note(run)
     if note:
         components.chips([note])
     st.caption(held_out_line(run))
+    repeats = evaluate.repeats_sentence(evaluate.held_out_repeats(run))
+    if repeats:
+        st.caption(repeats)
     if not board.empty:
         best = board.iloc[0]
         line = (f"Best balanced accuracy: **{html.escape(str(best['Channel']))}**, "
-                f'<span class="g-mono">{float(best["Balanced accuracy"]):.4f}</span>')
+                f'<span class="g-mono">{theme.score_text(best["Balanced accuracy"])}</span>')
         if len(board) > 1:
             runner = board.iloc[1]
             line += (f"; next is {html.escape(str(runner['Channel']))}, "
@@ -439,10 +442,10 @@ def _per_class_table(ev: ChannelEvaluation) -> None:
     table = table.rename(columns={"class": "Class", "support": "Held-out rows", "precision": "Precision",
                                   "recall": "Recall", "f1": "F1", "roc_auc": "ROC-AUC",
                                   "average_precision": "Average precision"})
-    config = {name: st.column_config.NumberColumn(name, format=SCORE_FORMAT)
-              for name in ("Precision", "Recall", "F1", "ROC-AUC", "Average precision")}
+    scores = ("Precision", "Recall", "F1", "ROC-AUC", "Average precision")
+    config = {name: st.column_config.NumberColumn(name, format=SCORE_FORMAT) for name in scores}
     config["Held-out rows"] = st.column_config.NumberColumn("Held-out rows", format="localized")
-    st.dataframe(table, hide_index=True, width="stretch", column_config=config)
+    st.dataframe(components.shown_scores(table, scores), hide_index=True, width="stretch", column_config=config)
 
 
 def permutation_estimate(run: TrainingRun, key: str, single_flow_ms: float, rows: int,
@@ -551,7 +554,8 @@ def _cv_results(run: TrainingRun, mode: Mode) -> None:
               if name.endswith(" mean") or name.endswith(" std")}
     config["Fit s mean"] = st.column_config.NumberColumn("Fit s mean", format="%.2f")
     config["Rows"] = st.column_config.NumberColumn("Rows", format="localized")
-    st.dataframe(table, hide_index=True, width="stretch", column_config=config)
+    means = [name for name in table.columns if name.endswith(" mean") and name != "Fit s mean"]
+    st.dataframe(components.shown_scores(table, means), hide_index=True, width="stretch", column_config=config)
     done = (f"{int(attrs.get('k', 0))} stratified folds of {int(attrs.get('rows', 0)):,} training rows (of "
             f"{int(attrs.get('rows_available', 0)):,}), measured in {float(attrs.get('seconds', 0.0)):,.1f} s. "
             "Standard deviations are over folds.")
@@ -663,9 +667,9 @@ def _no_held_out_rows(run: TrainingRun) -> None:
     if rows:
         st.markdown("Readings recorded when these channels were fitted (from the saved set; not measured again):")
         frame = pd.DataFrame(rows)
-        st.dataframe(frame, hide_index=True, width="stretch",
-                     column_config={c: st.column_config.NumberColumn(c, format=SCORE_FORMAT)
-                                    for c in frame.columns if c != "Channel"})
+        scores = [c for c in frame.columns if c != "Channel"]
+        st.dataframe(components.shown_scores(frame, scores), hide_index=True, width="stretch",
+                     column_config={c: st.column_config.NumberColumn(c, format=SCORE_FORMAT) for c in scores})
 
 
 def _run_chips(run: TrainingRun) -> list[str]:

@@ -770,6 +770,12 @@ def _check_shapes(folder: Path, manifest: Mapping[str, Any], channels: Mapping[s
                                    + ". The bundle is refused.")
 
 
+def _held_file_message(name: str, folder: Path) -> str:
+    """The message for a bundle file the operating system refused to open."""
+    return (f"{name} in {folder.name} cannot be opened: another program may be holding it, or access is denied. "
+            "Close it elsewhere and load the set again.")
+
+
 def _check_files(folder: Path, manifest: Mapping[str, Any]) -> None:
     """Every file the bundle needs is listed, present and matches its recorded SHA-256."""
     files = manifest.get("files")
@@ -788,7 +794,11 @@ def _check_files(folder: Path, manifest: Mapping[str, Any]) -> None:
         path = folder / str(name)
         if not path.is_file():
             raise BundleIntegrityError(f"{name} is missing from the saved channel set {folder.name}.")
-        if sha256_file(path) != str(recorded):
+        try:
+            digest = sha256_file(path)
+        except PermissionError as exc:
+            raise BundleReadError(_held_file_message(str(name), folder)) from exc
+        if digest != str(recorded):
             raise BundleIntegrityError(f"{name} in {folder.name} does not match the checksum recorded when it was "
                                        "saved: the file was changed or damaged afterwards. The bundle is refused.")
 
@@ -807,6 +817,9 @@ def _load_channels(folder: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
                 channels[key] = _load_xgboost(folder)
             elif names:
                 channels[key] = joblib.load(folder / names[0])
+        except PermissionError as exc:
+            held = exc.filename if isinstance(exc.filename, str) else (names[0] if names else key)
+            raise BundleReadError(_held_file_message(Path(held).name, folder)) from exc
         except Exception as exc:  # noqa: BLE001 - reported with the channel and file named
             raise BundleReadError(f"{_channel_label(key)} could not be read from {folder.name} "
                                   f"({type(exc).__name__}: {exc}).") from exc

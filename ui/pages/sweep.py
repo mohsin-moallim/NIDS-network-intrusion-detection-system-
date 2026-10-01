@@ -564,7 +564,7 @@ def _readings(session: SimulationSession, config: SweepConfig) -> None:
     stats = session.stats
 
     def score(value: float) -> str:
-        return "–" if not np.isfinite(value) else f"{value:.4f}"
+        return theme.score_text(value, missing="–")
 
     seen = stats.classes_seen
     components.reading_cards([

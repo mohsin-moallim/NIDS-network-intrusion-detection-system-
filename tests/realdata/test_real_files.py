@@ -104,3 +104,31 @@ def test_monday_alone_cannot_train_a_binary_detector(real_data_dir: Path) -> Non
     with pytest.raises(SingleClassError) as info:
         target_for_mode(ds.labels(), "binary", min_class_count=50)
     assert "every row is BENIGN" in str(info.value)
+
+
+#: Rows per label in each published file, as the dataset documents them (duplicates included, labels tidied).
+EXPECTED_LABEL_COUNTS: dict[str, dict[str, int]] = {
+    "Monday-WorkingHours.pcap_ISCX.csv": {"BENIGN": 529_918},
+    "Tuesday-WorkingHours.pcap_ISCX.csv": {"BENIGN": 432_074, "FTP-Patator": 7_938, "SSH-Patator": 5_897},
+    "Wednesday-workingHours.pcap_ISCX.csv": {"BENIGN": 440_031, "DoS Hulk": 231_073, "DoS GoldenEye": 10_293,
+                                             "DoS slowloris": 5_796, "DoS Slowhttptest": 5_499, "Heartbleed": 11},
+    "Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv": {
+        "BENIGN": 168_186, "Web Attack - Brute Force": 1_507, "Web Attack - XSS": 652,
+        "Web Attack - Sql Injection": 21},
+    "Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv": {"BENIGN": 288_566, "Infiltration": 36},
+    "Friday-WorkingHours-Morning.pcap_ISCX.csv": {"BENIGN": 189_067, "Bot": 1_966},
+    "Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv": {"BENIGN": 127_537, "PortScan": 158_930},
+    "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv": {"BENIGN": 97_718, "DDoS": 128_027},
+}
+
+
+def test_expected_label_counts_name_every_file() -> None:
+    assert set(EXPECTED_LABEL_COUNTS) == {f.name for f in EXPECTED_FILES}
+
+
+@pytest.mark.slow  # reads every whole file (about 10 s for all eight)
+@pytest.mark.parametrize("name", [f.name for f in EXPECTED_FILES])
+def test_every_file_holds_its_documented_label_counts(real_data_dir: Path, name: str) -> None:
+    _, report = read_source_file(_path(real_data_dir, name))
+    assert report.label_counts == EXPECTED_LABEL_COUNTS[name]
+    assert report.empty_labels == 0

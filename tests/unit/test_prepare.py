@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -278,15 +279,21 @@ def test_shared_reads_serve_every_strategy_unchanged(folder: Path) -> None:
         pd.testing.assert_frame_equal(frame, snapshot[name])
 
 
-def test_per_file_seconds_belong_to_this_draw(folder: Path) -> None:
-    """A reused read reports this draw's time and is marked cached, instead of repeating the first read's time."""
+def test_per_file_seconds_belong_to_this_draw(folder: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reused read reports this draw's time and is marked cached, instead of repeating the first read's time.
+
+    The preparation runs on a stand-in clock that only a fresh read moves (by 5 s), so the check does not depend
+    on how busy the machine is.
+    """
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(prepare, "time", SimpleNamespace(perf_counter=lambda: clock["now"]))
     cache: dict[str, tuple[pd.DataFrame, FileReadReport]] = {}
 
     def reader(path: Path) -> tuple[pd.DataFrame, FileReadReport]:
         if path.name not in cache:
-            time.sleep(0.05)  # stands in for a slow file, timed inside the "read"
             frame, report = read_source_file(path)
-            cache[path.name] = (frame, replace(report, seconds=report.seconds + 0.05))
+            clock["now"] += 5.0  # a slow file, timed inside the "read"
+            cache[path.name] = (frame, replace(report, seconds=5.0))
         return cache[path.name]
 
     first = prepare_dataset(_request(folder), read_file=reader)
@@ -295,7 +302,7 @@ def test_per_file_seconds_belong_to_this_draw(folder: Path) -> None:
     assert all(t.reused for t in second.file_timings.values())
     table = second.file_table()
     assert all(engine.endswith("(cached)") for engine in table["Engine"])
-    assert (table["Seconds"] < 0.05).all() and (first.file_table()["Seconds"] >= 0.05).all()
+    assert (table["Seconds"] < 5.0).all() and (first.file_table()["Seconds"] >= 5.0).all()
     assert all(not engine.endswith("(cached)") for engine in first.file_table()["Engine"])
 
 

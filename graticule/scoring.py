@@ -15,11 +15,17 @@ Rules the scorer keeps:
 * A file lacking any column the channels read is refused as a whole (:class:`MissingColumnsError`); nothing is
   scored partially.
 * Labels, when the file has them, are normalised as training labels are and mapped onto the run's classes: in
-  binary mode BENIGN is Normal and anything else is Attack; in multi-class mode a label must name one of the run's
-  classes (after the Web Attack merge, when the run used it). Labels the run never trained on are counted and left
-  out of the accuracy, as are empty labels.
+  binary mode BENIGN (or Normal) is Normal and any other name is Attack, and a note lists the labels read as
+  Attack; in multi-class mode a label must name one of the run's classes (after the Web Attack merge, when the run
+  used it). A label made only of digits (such as 0 or 1) is not read as Attack: it names no kind of traffic.
+  Labels the run never trained on are counted and left out of the accuracy, as are empty labels.
 * Alerts follow the rule every station shares (:func:`graticule.models.verdict.alert_flags`): an attack verdict
   whose attack probability is at least the threshold.
+* Rows the run has seen are named. Each scored row is matched (by a 64-bit hash over the channels' columns) with
+  the run's training and held-out rows, when the run holds them; the batch counts the rows that repeat a training
+  row and, for a labelled file, also gives accuracy and balanced accuracy over the rows the run never trained on.
+  A file the run's own sample was drawn from is flagged by name as well. Accuracy over rows a channel was trained
+  on says little about how it reads new traffic.
 
 Memory and the scored file. The upload is read in blocks of whole lines (about ``chunk_rows`` rows each, never more
 than :data:`READ_BLOCK_MAX` bytes), each block through the same reader with the file's header in front, and its
@@ -29,9 +35,10 @@ every uploaded line exactly as written (its own text, re-encoded as UTF-8; no va
 and appends the result columns. The uploaded bytes stay with the result for that download.
 
 A file whose lines cannot be matched one to one with its rows (a quoted line break, rows of uneven length, a line
-of spaces: the fast parser refuses such files and the fallback parser reads them) is read whole instead. Its
-download then writes the columns as read (feature columns as 32-bit numbers, which round integers beyond
-16,777,216; labels tidied), and a note says so; such a file also needs several times its own size in memory.
+of spaces: the fast parser refuses such files and the fallback parser reads them), or whose lines end in a bare
+carriage return (the old Mac format), is read whole instead. Its download then writes the columns as read (feature
+columns as 32-bit numbers, which round integers beyond 16,777,216; labels tidied), and a note says so; such a file
+also needs several times its own size in memory.
 
 The result is a :class:`ScoredBatch`, which also knows how to write itself as a CSV (UTF-8 with a byte-order mark,
 so spreadsheet programs read it correctly) for the download at 05 Assay; 07 Record exports its result columns.
@@ -45,6 +52,7 @@ import io
 import re
 import time
 import weakref
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,15 +69,23 @@ from graticule.data.clean import (
     FWD_BYTES,
     FWD_PACKETS,
     apply_nonfinite_strategy,
+    row_hashes,
 )
-from graticule.data.reader import DataFileError, FileReadReport, read_flow_csv
+from graticule.data.reader import (
+    DataFileError,
+    FileReadReport,
+    clean_column_name,
+    read_flow_csv,
+    strip_byte_order_mark,
+)
 from graticule.data.sampling import apply_class_options
 from graticule.evaluate import quick_metrics
 from graticule.models.jobs import CancelToken, TrainingCancelled
 from graticule.models.train import TrainingRun, _tidy_proba
 from graticule.models.verdict import ALERT_RULE, alert_flags, combine
-from graticule.schema import ATTACK, FEATURE_SET, LABEL, NORMAL, is_benign
-from graticule.theme import CHANNEL_BY_KEY, GLYPH_ALERT, verdict_text
+from graticule.models.verdict import attack_probability as attack_probability_of
+from graticule.schema import ATTACK, FEATURE_SET, LABEL, NORMAL, is_normal_traffic
+from graticule.theme import CHANNEL_BY_KEY, GLYPH_ALERT, score_text, verdict_text
 
 #: Channel value that scores with the consensus of every fitted channel.
 CONSENSUS = "consensus"
@@ -97,12 +113,14 @@ ALERT = "alert"
 AGREEMENT = "channels_agreeing"
 TRUE_LABEL = "true_label"
 VERDICT = "Verdict"
-#: The byte-order mark as a character (it can lead the first header name of a file).
-BOM_CHAR = chr(0xFEFF)
 #: Columns the ``recompute`` strategy needs besides the two rates it rebuilds.
 _RATE_INPUTS: tuple[str, ...] = (DURATION, FWD_BYTES, BWD_BYTES, FWD_PACKETS, BWD_PACKETS)
 #: How the C parser names a column whose header cell is empty.
 _UNNAMED = re.compile(r"^Unnamed: \d+$")
+#: A label that is only a number (0/1 style labels name no class: neither BENIGN nor an attack type).
+_NUMERIC_LABEL = re.compile(r"^[+-]?\d+(?:[.,]\d+)?$")
+#: Labels named one by one in the note on labels a binary run read as Attack.
+ATTACK_LABELS_SHOWN = 8
 
 ProgressFn = Callable[[str, float], None]
 UploadSource = bytes | BinaryIO | Path | str
@@ -210,6 +228,13 @@ class ScoredBatch:
         run_origin: ``"fitted"`` or ``"loaded"``: where the scoring run came from.
         upload: the uploaded file as written (see :class:`UploadedRows`), or None.
         run_ref: a weak reference to the scoring run object (see :meth:`made_with`), or None.
+        rows_seen_in_training: rows whose values over the channels' columns repeat a training row of the run; None
+            when the run does not hold its rows (a set loaded without its data folder), so no check was made.
+        rows_seen_held_out: rows that repeat one of the run's held-out rows (and no training row); None likewise.
+        unseen_accuracy, unseen_balanced_accuracy: readings over the labelled rows that repeat no training row
+            (None when not checked, or when no such row has a label the run knows).
+        rows_unseen_measured: rows those two readings cover.
+        from_sample_file: True when the file's name is one of the files the run's sample was drawn from.
     """
 
     frame: pd.DataFrame
@@ -238,6 +263,12 @@ class ScoredBatch:
     run_origin: str = "fitted"
     upload: UploadedRows | None = field(default=None, repr=False, compare=False)
     run_ref: Any = field(default=None, repr=False, compare=False)
+    rows_seen_in_training: int | None = None
+    rows_seen_held_out: int | None = None
+    unseen_accuracy: float | None = None
+    unseen_balanced_accuracy: float | None = None
+    rows_unseen_measured: int = 0
+    from_sample_file: bool = False
 
     @property
     def channel_name(self) -> str:
@@ -401,8 +432,8 @@ def unique_names(names: Sequence[str], *, taken: Iterable[str]) -> list[str]:
 
 
 def _is_normal(name: str) -> bool:
-    """True for the normal-traffic class under either naming (``BENIGN`` or the binary ``Normal``)."""
-    return is_benign(name) or name.strip().lower() == NORMAL.lower()
+    """True for the normal-traffic class under either naming (``BENIGN`` or ``Normal``, any letter case)."""
+    return is_normal_traffic(name)
 
 
 def _normal_index(classes: Sequence[str]) -> int | None:
@@ -412,7 +443,7 @@ def _normal_index(classes: Sequence[str]) -> int | None:
 
 def _clean_name(name: object) -> str:
     """A header name without a byte-order mark or surrounding spaces (as the reader matches names)."""
-    return str(name).replace(BOM_CHAR, "").strip()
+    return clean_column_name(name)
 
 
 def _payload(source: UploadSource, name: str | None) -> tuple[bytes, str]:
@@ -470,6 +501,12 @@ def _header_stop(payload: bytes) -> int:
     """Offset just past the header line (the whole payload when it holds a single line)."""
     end = payload.find(b"\n")
     return len(payload) if end < 0 else end + 1
+
+
+def _bare_carriage_returns(payload: bytes, header_stop: int) -> bool:
+    """True when the file's lines end in a bare carriage return (the old Mac format, still written by some
+    spreadsheet programs): the "header line" up to the first line feed then holds carriage returns inside it."""
+    return b"\r" in payload[:header_stop].rstrip(b"\r\n")
 
 
 def _line_blocks(payload: bytes, header_stop: int, chunk_rows: int) -> list[tuple[int, int]]:
@@ -582,7 +619,7 @@ def _write_spliced(upload: UploadedRows, results: pd.DataFrame, buffer: BinaryIO
     """Write each uploaded line exactly as written, followed by its result cells."""
     names = [str(c) for c in results.columns]
     first = upload.blocks[0].encoding if upload.blocks else "utf-8"
-    header = _decode(upload.payload[: upload.header_stop], first).replace(BOM_CHAR, "", 1).rstrip("\r\n")
+    header = strip_byte_order_mark(_decode(upload.payload[: upload.header_stop], first)).rstrip("\r\n")
     # Only a name a result column uses is changed; everything else in the header (spaces, a repeated column) stays
     # as written.
     taken = set(names)
@@ -637,13 +674,16 @@ def _extra_columns(payload: bytes, encoding: str, names: Sequence[str], index: p
     return raw, None
 
 
-def _map_labels(labels: pd.Series, run: TrainingRun) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Map uploaded labels onto the run's classes; returns (codes with -1 for unknown, shown true labels, empty).
+def _map_labels(labels: pd.Series, run: TrainingRun
+                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int]]:
+    """Map uploaded labels onto the run's classes; returns (codes with -1 for unknown, shown true labels, empty,
+    rows per label a binary run read as Attack).
 
     Labels arrive already normalised by the reader. The run's Web Attack merge is applied first; then binary runs
-    read BENIGN (or "Normal") as Normal and every other label as Attack, while multi-class runs need the label to
+    read BENIGN (or "Normal") as Normal and every other name as Attack, while multi-class runs need the label to
     name one of their classes (an exact match first, then one that differs only in letter case; "Normal" stands for
-    BENIGN).
+    BENIGN). In binary mode a label made only of digits is unknown: it says nothing about the kind of traffic (a
+    multi-class run reads it only when it is one of the run's own classes).
     """
     classes = [str(c) for c in run.data.classes]
     merged = apply_class_options(labels.astype("str"), merge_web_attacks=bool(run.data_request.merge_web_attacks))
@@ -654,13 +694,20 @@ def _map_labels(labels: pd.Series, run: TrainingRun) -> tuple[np.ndarray, np.nda
     binary = run.request.mode == "binary" and ATTACK in code_of and NORMAL in code_of
     lookup: dict[str, int] = {}
     blank: dict[str, bool] = {}
+    read_as_attack: list[str] = []
     for value in values.unique():
         text = str(value)
         blank[text] = text.strip() == ""
         if text.strip() == "":
             lookup[text] = -1
         elif binary:
-            lookup[text] = code_of[NORMAL] if _is_normal(text) else code_of[ATTACK]
+            if _NUMERIC_LABEL.match(text.strip()):
+                lookup[text] = -1
+            elif _is_normal(text):
+                lookup[text] = code_of[NORMAL]
+            else:
+                lookup[text] = code_of[ATTACK]
+                read_as_attack.append(text)
         elif text in code_of:
             lookup[text] = code_of[text]
         elif text.casefold() in folded:
@@ -674,7 +721,11 @@ def _map_labels(labels: pd.Series, run: TrainingRun) -> tuple[np.ndarray, np.nda
     empty = values.map(blank).to_numpy(dtype=bool)
     names = np.asarray(classes, dtype=object)
     shown = np.where(codes >= 0, names[np.clip(codes, 0, None)], values.to_numpy(dtype=object))
-    return codes, shown.astype(str), empty
+    as_attack: dict[str, int] = {}
+    if read_as_attack:
+        counts = values[values.isin(read_as_attack)].value_counts()
+        as_attack = {str(k): int(v) for k, v in counts.items()}
+    return codes, shown.astype(str), empty, as_attack
 
 
 def _chunk_matrix(columns: dict[str, np.ndarray], features: Sequence[str], start: int, stop: int,
@@ -715,6 +766,38 @@ def _voters(run: TrainingRun, channel: str) -> tuple[str, ...]:
     return (channel,)
 
 
+def _matrix_hashes(X: np.ndarray, features: Sequence[str]) -> np.ndarray:
+    """64-bit hashes of the rows of a float32 matrix over ``features`` (as de-duplication hashes rows)."""
+    return row_hashes(pd.DataFrame(X, columns=list(features), copy=False), list(features))
+
+
+#: Attribute of a run holding the hashes of its training and held-out rows (computed once per run object).
+ROW_HASHES_ATTR = "assay_row_hashes"
+
+
+def _run_row_hashes(run: TrainingRun) -> tuple[np.ndarray, np.ndarray]:
+    """Sorted unique hashes of the run's training rows and of its held-out rows, kept on the run object."""
+    kept = run.__dict__.get(ROW_HASHES_ATTR)
+    if isinstance(kept, tuple) and len(kept) == 2:
+        return kept
+    features = [str(f) for f in run.data.feature_names]
+    train = np.unique(_matrix_hashes(np.asarray(run.data.X_train, dtype=np.float32), features))
+    held_out = getattr(run.data, "X_test", None)
+    held_out = np.empty((0, len(features)), dtype=np.float32) if held_out is None else held_out
+    test = np.unique(_matrix_hashes(np.asarray(held_out, dtype=np.float32), features))
+    run.__dict__[ROW_HASHES_ATTR] = (train, test)
+    return train, test
+
+
+def _is_sample_file(run: TrainingRun, name: str) -> bool:
+    """True when ``name`` (an uploaded file's name) is one of the files the run's sample was drawn from."""
+    request = run.data_request
+    if str(getattr(request, "source", "cicids")) != "cicids":
+        return False
+    wanted = Path(str(name)).name.strip().lower()
+    return any(Path(str(f)).name.lower() == wanted for f in (getattr(request, "files", ()) or ()))
+
+
 def _weak_reference(run: Any) -> Any:
     """A weak reference to ``run``, or None for an object that cannot be referenced weakly."""
     try:
@@ -735,6 +818,10 @@ class _Readings:
         self.features = [str(f) for f in run.data.feature_names]
         self.classes = tuple(str(c) for c in run.data.classes)
         self.strategy = str(run.data_request.nonfinite_strategy)
+        # Rows are matched with the run's own rows only when it holds them (a set loaded without its data folder
+        # does not).
+        held = getattr(run.data, "X_train", None)
+        self.match_rows = held is not None and len(held) > 0
         self.step = step
         self.check = check
         self.reset()
@@ -747,6 +834,8 @@ class _Readings:
         self.codes: list[np.ndarray] = []
         self.shown: list[np.ndarray] = []
         self.empty: list[np.ndarray] = []
+        self.read_as_attack: Counter[str] = Counter()
+        self.hashes: list[np.ndarray] = []
         self.has_label = False
         self.rows = 0
         self.bad_rows = 0
@@ -765,6 +854,8 @@ class _Readings:
             stop = min(n, start + self.step)
             X, bad = _chunk_matrix(columns, self.features, start, stop, self.strategy, rate_inputs)
             self.bad_rows += int(bad.sum())
+            if self.match_rows:
+                self.hashes.append(_matrix_hashes(X, self.features))
             mark = time.perf_counter()
             if self.consensus:
                 verdict = combine({key: _channel_proba(est, X, n_classes) for key, est in self.estimators.items()})
@@ -777,7 +868,8 @@ class _Readings:
                 self.predicted.append(part.argmax(axis=1).astype(np.int64))
             self.seconds += time.perf_counter() - mark
         if LABEL in frame.columns:
-            codes, shown, empty = _map_labels(frame[LABEL], self.run)
+            codes, shown, empty, as_attack = _map_labels(frame[LABEL], self.run)
+            self.read_as_attack.update(as_attack)
             self.has_label = True
             self.codes.append(codes)
             self.shown.append(shown)
@@ -883,11 +975,12 @@ def score_upload(
     # Read and score block by block; each block must give exactly one row per non-empty line.
     readings = _Readings(run, channel, voters, step, check)
     header_stop = _header_stop(payload)
-    spans = _line_blocks(payload, header_stop, step)
+    old_mac = _bare_carriage_returns(payload, header_stop)
+    spans = [] if old_mac else _line_blocks(payload, header_stop, step)
     head_bytes = payload[:header_stop]
     blocks: list[LineBlock] = []
     reports: list[FileReadReport] = []
-    as_written = True
+    as_written = not old_mac
     what = channel_name(channel)
     for start, stop in spans:
         check()
@@ -947,10 +1040,12 @@ def score_upload(
             parts.append(frame[[LABEL]])
         read_frame = pd.concat(parts, axis=1) if len(parts) > 1 else parts[0]
         del frame
-        notes.append(f"The lines of {label} could not be matched one to one with its rows (a quoted line break, "
-                     "rows of uneven length or a line of spaces), so the file was read whole. Its download writes "
-                     "the columns as read: feature columns as 32-bit numbers, which round integers beyond "
-                     "16,777,216, and labels tidied.")
+        why = ("end in a bare carriage return (the old Mac format)" if old_mac else
+               "could not be matched one to one with its rows (a quoted line break, rows of uneven length or a "
+               "line of spaces)")
+        notes.append(f"The lines of {label} {why}, so the file was read whole. Its download writes the columns as "
+                     "read: feature columns as 32-bit numbers, which round integers beyond 16,777,216, and labels "
+                     "tidied.")
     n = readings.rows
     if n == 0:
         raise DataFileError(f"{label} holds no flow rows to score.")
@@ -965,12 +1060,8 @@ def score_upload(
     predicted = np.concatenate(readings.predicted) if len(readings.predicted) > 1 else readings.predicted[0]
     agreement = np.concatenate(readings.agreement) if readings.consensus else None
     normal = _normal_index(classes)
-    if run.request.mode == "binary" and ATTACK in classes:
-        attack_probability = proba[:, classes.index(ATTACK)].astype(np.float32)
-    elif normal is not None:
-        attack_probability = (np.float32(1.0) - proba[:, normal]).astype(np.float32)
-    else:
-        attack_probability = np.ones(n, dtype=np.float32)
+    # The rule every station shares: P(Attack) with two classes, else 1 - P(normal); compared in float32.
+    attack_probability = attack_probability_of(proba, normal)
     alert = alert_flags(attack_probability, predicted, normal, threshold)
 
     index = pd.RangeIndex(n)
@@ -1021,6 +1112,53 @@ def score_upload(
             rows_word = "row carries a label" if total == 1 else "rows carry labels"
             notes.append(f"{total:,} {rows_word} this run never trained on, scored but left out of the readings: "
                          + ", ".join(f"{k} ({v:,})" for k, v in unseen.items()) + ".")
+            if any(_NUMERIC_LABEL.match(k.strip()) for k in unseen):
+                notes.append("Labels made only of digits (such as 0 and 1) name no class, so they cannot be "
+                             "compared with a verdict. Label normal traffic BENIGN (or Normal) and attacks with "
+                             "their names to have these rows measured.")
+        if readings.read_as_attack and labelled:
+            ranked = sorted(readings.read_as_attack.items(), key=lambda kv: (-kv[1], kv[0]))
+            listed = ", ".join(f"{k} ({v:,})" for k, v in ranked[:ATTACK_LABELS_SHOWN])
+            more = f" and {len(ranked) - ATTACK_LABELS_SHOWN:,} more" if len(ranked) > ATTACK_LABELS_SHOWN else ""
+            notes.append("In binary mode every label other than BENIGN or Normal counts as Attack. Read as Attack "
+                         f"here: {listed}{more}.")
+    # Rows the run has seen: matched with its training and held-out rows over the channels' columns.
+    seen_train: int | None = None
+    seen_test: int | None = None
+    unseen_accuracy: float | None = None
+    unseen_balanced: float | None = None
+    unseen_measured = 0
+    from_sample = _is_sample_file(run, label)
+    if readings.match_rows and readings.hashes:
+        tell("Matching the rows with the run's own rows", 0.98)
+        train_hashes, test_hashes = _run_row_hashes(run)
+        hashes = np.concatenate(readings.hashes) if len(readings.hashes) > 1 else readings.hashes[0]
+        in_train = np.isin(hashes, train_hashes)
+        in_test = np.isin(hashes, test_hashes) & ~in_train
+        seen_train, seen_test = int(in_train.sum()), int(in_test.sum())
+        if readings.has_label and seen_train:
+            fresh = (np.concatenate(readings.codes) >= 0) & ~in_train
+            unseen_measured = int(fresh.sum())
+            if unseen_measured:
+                codes_all = np.concatenate(readings.codes)
+                fresh_scores = quick_metrics(codes_all[fresh], predicted[fresh], n_classes)
+                unseen_accuracy = float(fresh_scores["accuracy"])
+                unseen_balanced = float(fresh_scores["balanced_accuracy"])
+        if seen_train or seen_test:
+            share = seen_train / n
+            verb = "repeats" if seen_train == 1 else "repeat"
+            text = (f"{seen_train:,} row{'s' if seen_train != 1 else ''} ({share:.1%}) {verb} a row this run was "
+                    f"trained on and {seen_test:,} one of its held-out rows (compared over the channels' "
+                    "columns).")
+            if unseen_accuracy is not None and unseen_balanced is not None:
+                text += (f" Over the {unseen_measured:,} labelled rows it never trained on: accuracy "
+                         f"{score_text(unseen_accuracy)}, balanced accuracy {score_text(unseen_balanced)}.")
+            elif seen_train and readings.has_label:
+                text += " Every labelled row repeats a training row, so these readings are not held-out readings."
+            notes.append(text)
+    if from_sample:
+        notes.append(f"{label} is one of the files this run's sample was drawn from, so it holds rows the channels "
+                     "were trained on: its accuracy is not a reading on unseen traffic.")
     if readings.bad_rows:
         rows_word = "row holds" if readings.bad_rows == 1 else "rows hold"
         how = _STRATEGY_NOTES.get(readings.strategy, "They were treated as during the fit.")
@@ -1043,6 +1181,9 @@ def score_upload(
         voters=voters, extra_columns=extra_names, notes=notes,
         predicted_counts={name: int(per_class[j]) for j, name in enumerate(classes)},
         run_origin=str(getattr(run, "origin", "fitted")), upload=upload, run_ref=_weak_reference(run),
+        rows_seen_in_training=seen_train, rows_seen_held_out=seen_test, unseen_accuracy=unseen_accuracy,
+        unseen_balanced_accuracy=unseen_balanced, rows_unseen_measured=unseen_measured,
+        from_sample_file=from_sample,
     )
 
 

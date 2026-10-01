@@ -34,12 +34,12 @@ import streamlit as st
 from graticule import theme
 from graticule.data.prepare import PreparedDataset
 from graticule.data.sampling import SingleClassError
-from graticule.evaluate import quick_metrics
+from graticule.evaluate import held_out_repeats, quick_metrics, repeats_sentence
 from graticule.history import RunHistory
 from graticule.models.jobs import JobBusyError, TrainingCancelled, TrainingJob, get_job, sync_training_requested
 from graticule.models.train import TrainingRun, TrainRequest
 from graticule.models.zoo import MODEL_KEYS, Profile
-from graticule.schema import is_benign
+from graticule.schema import is_normal_traffic
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 
@@ -402,7 +402,7 @@ def _test_distribution(run: TrainingRun) -> str:
         pairs = [(str(name), _int(count)) for name, count in recorded.items() if _int(count) > 0]
     parts = []
     for name, count in pairs:
-        glyph = theme.GLYPH_NORMAL if is_benign(name) or name == "Normal" else theme.GLYPH_ATTACK
+        glyph = theme.GLYPH_NORMAL if is_normal_traffic(name) else theme.GLYPH_ATTACK
         parts.append(f"{glyph} {name} {count:,}")
     return " · ".join(parts)
 
@@ -425,7 +425,8 @@ def readings_panel(run: TrainingRun, prepared: PreparedDataset | None) -> None:
     _sample_check(run, prepared)
     readings = kept_readings(run)
     st.dataframe(
-        readings, hide_index=True, width="stretch",
+        components.shown_scores(readings, ("Accuracy", "Balanced accuracy", "Macro F1")), hide_index=True,
+        width="stretch",
         column_config={
             "Rows used": st.column_config.NumberColumn("Rows used", format="localized",
                                                        help="Training rows this channel was fitted on."),
@@ -447,6 +448,9 @@ def readings_panel(run: TrainingRun, prepared: PreparedDataset | None) -> None:
     _, n_test, in_memory = split_sizes(run)
     if in_memory:
         st.caption(f"Measured on {n_test:,} held-out rows: {_test_distribution(run)}.")
+        repeats = repeats_sentence(held_out_repeats(run))
+        if repeats:
+            st.caption(repeats)
     else:
         st.caption(f"Measured on {n_test:,} held-out rows when fitted: {_test_distribution(run)}. This run was "
                    "loaded from disk without them; the readings are those saved with it.")
@@ -454,8 +458,8 @@ def readings_panel(run: TrainingRun, prepared: PreparedDataset | None) -> None:
     if best is not None:
         label, value = best
         st.markdown(f"Best balanced accuracy: **{html.escape(label)}**, "
-                    f'<span class="g-mono">{value:.4f}</span>. These readings stay in memory, and nothing refits '
-                    "until you press Fit again.", unsafe_allow_html=True)
+                    f'<span class="g-mono">{theme.score_text(value)}</span>. These readings stay in memory, and '
+                    "nothing refits until you press Fit again.", unsafe_allow_html=True)
     for note in run_notes(run):
         st.markdown(note)
     page = PAGE_OBJECTS.get("measure")

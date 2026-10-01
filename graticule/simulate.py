@@ -46,9 +46,9 @@ import pandas as pd
 from graticule.data import synthetic
 from graticule.data.clean import apply_nonfinite_strategy
 from graticule.models.train import _tidy_proba, score_in_blocks
-from graticule.models.verdict import alert_flags
+from graticule.models.verdict import alert_flags, attack_probability
 from graticule.persist import deterministic
-from graticule.schema import FEATURE_SET, LABEL, NORMAL, is_benign
+from graticule.schema import FEATURE_SET, LABEL, is_normal_traffic
 from graticule.theme import CHANNEL_BY_KEY
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ LOG_COLUMNS: tuple[str, ...] = ("seq", "tick", "row_id", "true_label", "detailed
 
 def is_normal_class(name: str) -> bool:
     """True for the normal-traffic class under either naming (``BENIGN`` in multi-class, ``Normal`` in binary)."""
-    return is_benign(str(name)) or str(name) == NORMAL
+    return is_normal_traffic(str(name))
 
 
 def normal_index(classes: Sequence[str]) -> int | None:
@@ -789,18 +789,16 @@ class SimulationSession:
             proba, seconds = self._score(batch.X)
             predicted = proba.argmax(axis=1).astype(np.int64)
             confidence = proba[np.arange(n), predicted].astype(np.float64)
+            # The shared rule (as at 04 Probe and 05 Assay): P(Attack) with two classes, else 1 - P(normal).
+            attack_p = attack_probability(proba, self.normal_index)
             if self.normal_index is None:
-                attack_p = np.ones(n, dtype=np.float64)
                 verdict_attack = np.ones(n, dtype=bool)
                 true_attack = np.ones(n, dtype=bool)
             else:
-                if len(self.classes) == 2:  # binary: the attack class's own probability
-                    attack_p = proba[:, 1 - self.normal_index].astype(np.float64)
-                else:  # multi-class: everything that is not normal traffic
-                    attack_p = np.clip(1.0 - proba[:, self.normal_index].astype(np.float64), 0.0, 1.0)
                 verdict_attack = predicted != self.normal_index
                 true_attack = batch.y_true != self.normal_index
             alert = alert_flags(attack_p, predicted, self.normal_index, self._threshold)
+            attack_p = attack_p.astype(np.float64)
             correct = predicted == batch.y_true
             np.add.at(self._confusion, (batch.y_true, predicted), 1)
             first = self._emitted + 1

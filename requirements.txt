@@ -9,5 +9,8 @@ xgboost==3.4.1
 altair==6.3.0
 vl-convert-python==1.9.0.post1
 fpdf2==2.8.9
+# The PDF builder also uses these two directly (font instancing for the variable fonts, chart image resampling).
+fonttools==4.66.1
+pillow==12.3.0
 joblib==1.6.0
 pytest==9.1.1

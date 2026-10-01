@@ -14,7 +14,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from graticule.schema import ATTACK, BENIGN, NORMAL, WEB_ATTACK, is_benign
+from graticule.schema import ATTACK, BENIGN, NORMAL, WEB_ATTACK, is_normal_traffic
 
 Mode = Literal["binary", "multiclass"]
 HARD_FLOOR = 10
@@ -48,7 +48,7 @@ def apply_class_options(labels: pd.Series, *, merge_web_attacks: bool) -> pd.Ser
 
 def class_order(classes: Sequence[str]) -> list[str]:
     """Canonical class order: normal traffic first, then the rest alphabetically (defines label codes 0..K-1)."""
-    unique = sorted(set(classes), key=lambda c: (not (is_benign(c) or c == NORMAL), c.lower(), c))
+    unique = sorted(set(classes), key=lambda c: (not is_normal_traffic(c), c.lower(), c))
     return unique
 
 
@@ -72,8 +72,8 @@ class TargetResult:
 
 
 def _is_normal(name: str) -> bool:
-    """True for the normal-traffic class under either naming (``BENIGN`` or the binary ``Normal``)."""
-    return is_benign(name) or name == NORMAL
+    """True for the normal-traffic class under either naming (``BENIGN`` or ``Normal``, any letter case)."""
+    return is_normal_traffic(name)
 
 
 def _too_few_remedy(reasons: dict[str, str], names: list[str]) -> str:
@@ -126,7 +126,8 @@ def target_for_mode(
 ) -> TargetResult:
     """Build the target for ``mode``.
 
-    ``binary`` maps BENIGN to "Normal" and every other label to "Attack". ``multiclass`` keeps the labels as they
+    ``binary`` maps normal traffic (BENIGN, or a label already reading "Normal", in any letter case) to "Normal"
+    and every other label to "Attack". ``multiclass`` keeps the labels as they
     are and leaves out classes with fewer than ``min_class_count`` rows. In both modes a class with fewer than
     ``hard_floor`` rows is left out. Raises :class:`SingleClassError` when fewer than two classes remain.
     """
@@ -134,7 +135,7 @@ def target_for_mode(
         raise ValueError(f"Unknown mode: {mode!r}")
     values = pd.Series(labels.to_numpy(dtype=object, na_value=""), index=labels.index)
     if mode == "binary":
-        lookup = {v: (NORMAL if is_benign(str(v)) else ATTACK) for v in values.unique()}
+        lookup = {v: (NORMAL if is_normal_traffic(str(v)) else ATTACK) for v in values.unique()}
         series = values.map(lookup).astype("str")
         threshold = hard_floor
     else:

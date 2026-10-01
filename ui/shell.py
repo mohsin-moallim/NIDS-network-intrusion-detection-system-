@@ -11,12 +11,20 @@ from pathlib import Path
 
 import streamlit as st
 
-from graticule import APP_NAME
+from graticule import APP_NAME, TAGLINE, __version__
 from ui import components, state
 from ui.pages import assay, bench, fit, logbook, measure, probe, record, sample, sweep
 from ui.stations import ALL_STATIONS, PAGE_OBJECTS
 
 ICON = Path(__file__).resolve().parent.parent / "static" / "graticule-icon.svg"
+#: The "About" text of the ⋮ menu. An entry of the app's own keeps that menu on screen under the minimal toolbar
+#: (``.streamlit/config.toml``), and with it the Theme choice: light (paper), dark (graphite) or the system setting.
+ABOUT = "\n\n".join((
+    f"**{APP_NAME}** {__version__}: {TAGLINE}",
+    "Light (paper) and dark (graphite) themes are chosen under Theme in the ⋮ menu; the PDF record always uses "
+    "the light one.",
+    "MIT licence, © 2026 mohsin-moallim.",
+))
 
 RENDERERS: dict[str, Callable[[], None]] = {
     "sample": sample.render,
@@ -54,7 +62,8 @@ def main(force_key: str | None = None) -> None:
     strip was drawn; the strip is then drawn again into the same placeholder, so the tick shows in that very run
     rather than after the viewer's next click.
     """
-    st.set_page_config(page_title=APP_NAME, page_icon=str(ICON), layout="wide", initial_sidebar_state="collapsed")
+    st.set_page_config(page_title=APP_NAME, page_icon=str(ICON), layout="wide", initial_sidebar_state="collapsed",
+                       menu_items={"About": ABOUT})
     st.logo(str(ICON), size="large")
     pages = register_pages()
     current = st.navigation(pages, position="hidden")

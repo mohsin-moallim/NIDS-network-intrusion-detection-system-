@@ -162,6 +162,7 @@ def _show_hollow_run(at: AppTest, run: object) -> None:
     assert evaluate.cached_evaluations(hollow) is None and _fits() == fits
 
 
+@pytest.mark.slow  # the binary test above covers every section; this adds the per-class views (about 4 s)
 def test_multiclass_run_shows_per_class_curves(fresh_caches: None, monkeypatch: pytest.MonkeyPatch) -> None:
     at = _fitted_app("multiclass", channels=["forest", "logreg"])
     run = at.session_state[state.RUN]

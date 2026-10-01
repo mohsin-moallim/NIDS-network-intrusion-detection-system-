@@ -6,7 +6,10 @@ that same class on their own (for example "4 of 5 channels read Attack").
 
 The alert rule lives here too, so 04 Probe, 05 Assay and 06 Sweep raise the very same alerts: a flow raises a
 high-confidence alert when its verdict is an attack class AND its attack probability (binary: P(Attack);
-multi-class: 1 - P(normal class)) is at least the alert threshold (:func:`alert_flags`).
+multi-class: 1 - P(normal class)) is at least the alert threshold (:func:`alert_flags`). Every station computes
+the attack probability with :func:`attack_probability` and compares it with the threshold in 32-bit precision
+(the precision every channel's probabilities are kept in), so a flow whose probability sits exactly on the
+threshold gets the same answer everywhere, and a probability printed as 0.7 meets a threshold of 0.7.
 """
 
 from __future__ import annotations
@@ -21,23 +24,46 @@ import numpy as np
 ALERT_RULE = "an attack verdict whose attack probability is at least the alert threshold"
 
 
+def attack_probability(proba: Any, normal_index: int | None) -> np.ndarray:
+    """The attack probability of each flow (float32, one entry per flow) from its class probabilities.
+
+    ``proba`` is an (n x K) array (a single flow may be a length-K vector) in class-code order. With two classes
+    (a binary run, or a multi-class run left with one attack class): the probability of the attack class itself.
+    With more: one minus the probability of the normal class ``normal_index``, kept within 0..1. Without a normal
+    class (None) every flow is an attack with certainty (1.0). The arithmetic is done in float64 and the result
+    kept as float32, the precision of the probabilities themselves, the same way at 04 Probe, 05 Assay and 06
+    Sweep.
+    """
+    values = np.asarray(proba, dtype=np.float64)
+    if values.ndim == 1:
+        values = values[np.newaxis, :]
+    if values.ndim != 2:
+        raise ValueError("Class probabilities must be an (n x K) array.")
+    if normal_index is None:
+        return np.ones(values.shape[0], dtype=np.float32)
+    normal = int(normal_index)
+    if values.shape[1] == 2:
+        return values[:, 1 - normal].astype(np.float32)
+    return np.clip(1.0 - values[:, normal], 0.0, 1.0).astype(np.float32)
+
+
 def alert_flags(attack_probability: Any, label_index: Any, normal_index: int | None, threshold: float
                 ) -> np.ndarray:
     """Which flows raise a high-confidence alert (bool array, one entry per flow).
 
     A flow raises one when its verdict (``label_index``, class codes) is not the normal class ``normal_index`` AND
     its ``attack_probability`` is at least ``threshold``. With no normal class every verdict counts as an attack.
-    NaN probabilities never alert. The comparison is made in the precision of ``attack_probability`` (a float32
-    array is compared with the threshold as float32), so the same inputs always give the same flags.
+    NaN probabilities never alert. Probability and threshold are both compared as float32 (the precision the
+    channels' probabilities are kept in), whatever precision they arrive in, so the same flow and threshold always
+    give the same flag at every station.
     """
-    probability = np.atleast_1d(np.asarray(attack_probability))
+    probability = np.atleast_1d(np.asarray(attack_probability, dtype=np.float32))
     labels = np.atleast_1d(np.asarray(label_index)).astype(np.int64, copy=False)
     if probability.shape != labels.shape:
         raise ValueError("Give one attack probability and one verdict per flow.")
-    limit = probability.dtype.type(threshold) if np.issubdtype(probability.dtype, np.floating) else float(threshold)
     attack_verdict = np.ones(labels.shape, dtype=bool) if normal_index is None else labels != int(normal_index)
     with np.errstate(invalid="ignore"):
-        return attack_verdict & (probability >= limit)
+        return attack_verdict & (probability >= np.float32(threshold))
 
 
 @dataclass(frozen=True)

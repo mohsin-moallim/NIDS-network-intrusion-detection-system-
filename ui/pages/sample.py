@@ -17,7 +17,7 @@ from graticule.data import prepare
 from graticule.data.clean import CONFLICT_POLICIES
 from graticule.data.prepare import DataRequest, PreparedDataset
 from graticule.data.reader import DataFileError
-from graticule.schema import EXPECTED_BY_NAME, is_benign
+from graticule.schema import EXPECTED_BY_NAME, is_normal_traffic
 from graticule.settings import NONFINITE_STRATEGIES, AppSettings, DataDirResolution, resolve_data_dir
 from ui import components, data_cache, state
 
@@ -198,7 +198,7 @@ def _class_table(dataset: PreparedDataset) -> None:
     """Per-class rows available and sampled, with the ○/◆ shape marks."""
     table = dataset.class_table()
     table["Class"] = [
-        f"{theme.GLYPH_NORMAL if is_benign(c) else theme.GLYPH_ATTACK} {c}" for c in table["Class"]
+        f"{theme.GLYPH_NORMAL if is_normal_traffic(c) else theme.GLYPH_ATTACK} {c}" for c in table["Class"]
     ]
     st.dataframe(
         table.drop(columns=["Kind"]), hide_index=True, width="stretch",

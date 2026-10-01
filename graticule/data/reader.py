@@ -6,8 +6,10 @@ was (U+FFFD in the UTF-8 copies, byte 0x96 in Windows-1252 copies). Rates such a
 the text ``Infinity``, which is parsed as ``inf``.
 
 Reading tries the fast pyarrow engine first and falls back to pandas' C engine; encodings are tried in the order
-UTF-8, Windows-1252, Latin-1. The same function reads files on disk and uploaded files (for batch scoring), where
-the ``Label`` column is optional.
+UTF-8, Windows-1252, Latin-1. A UTF-8 byte-order mark is dropped from the first header name even when the rest of
+the file is read in one of the other two encodings, and a file saved as UTF-16 or UTF-32 text is refused with a
+message saying so (rather than being read as garbled column names). The same function reads files on disk and
+uploaded files (for batch scoring), where the ``Label`` column is optional.
 """
 
 from __future__ import annotations
@@ -26,11 +28,21 @@ import pandas as pd
 from graticule.schema import FEATURE_SET, FEATURES, LABEL, normalize_label
 
 # Bump when reading or cleaning logic changes, so cached per-file results are rebuilt.
-READER_VERSION = "1"
+READER_VERSION = "2"
 ENCODINGS: tuple[str, ...] = ("utf-8", "cp1252", "latin-1")
 Engine = Literal["auto", "pyarrow", "c"]
 Source = Path | str | bytes | BinaryIO
 
+#: The byte-order mark as a character, and as Windows-1252 or Latin-1 read its three UTF-8 bytes (EF BB BF).
+BOM_TEXT = "\ufeff"
+MISREAD_BOM = b"\xef\xbb\xbf".decode("latin-1")
+#: Byte-order marks of wide text encodings this reader does not take (UTF-32 first: its little-endian mark begins
+#: with the UTF-16 one).
+_WIDE_MARKS: tuple[tuple[bytes, str], ...] = (
+    (b"\x00\x00\xfe\xff", "UTF-32"), (b"\xff\xfe\x00\x00", "UTF-32"), (b"\xfe\xff", "UTF-16"), (b"\xff\xfe", "UTF-16"),
+)
+#: Bytes looked at to recognise wide text without a byte-order mark.
+_SNIFF_BYTES = 4096
 # The C engine renames a repeated header "X" to "X.1", "X.2", ...
 _MANGLED = re.compile(r"^(?P<base>.+?)\.(?P<n>\d+)$")
 _DECODE_HINTS = ("utf8", "utf-8", "decode", "codec", "encoding", "unicode")
@@ -125,6 +137,30 @@ def _as_input(source: Source) -> Path | bytes:
     raise TypeError(f"Cannot read flows from a {type(source).__name__}")
 
 
+def _first_bytes(data: Path | bytes, size: int = _SNIFF_BYTES) -> bytes:
+    """The first ``size`` bytes of a file on disk or of raw bytes (empty when the file cannot be opened: the
+    reader then reports that problem itself)."""
+    if isinstance(data, Path):
+        try:
+            with data.open("rb") as handle:
+                return handle.read(size)
+        except OSError:
+            return b""
+    return bytes(data[:size])
+
+
+def wide_text_encoding(head: bytes) -> str | None:
+    """``"UTF-16"`` or ``"UTF-32"`` when bytes from the start of a file are text in one of those encodings (a
+    byte-order mark, or the zero bytes every second character of plain text carries in UTF-16), else None."""
+    for mark, name in _WIDE_MARKS:
+        if head.startswith(mark):
+            return name
+    sample = head[:_SNIFF_BYTES]
+    if sample and sample.count(b"\x00") > len(sample) // 4:
+        return "UTF-16"
+    return None
+
+
 def _looks_like_decoding_problem(exc: BaseException) -> bool:
     """True when a parser error message points at text decoding rather than the CSV structure."""
     text = str(exc).lower()
@@ -193,9 +229,24 @@ def _read_raw(data: Path | bytes, engine: Engine, nrows: int | None) -> tuple[pd
     raise DataFileError(f"Could not read the file as CSV: {detail}")
 
 
+def strip_byte_order_mark(text: str) -> str:
+    """``text`` without a leading byte-order mark, whether it was read as UTF-8 (U+FEFF) or as Windows-1252 or
+    Latin-1 (the three characters "ï»¿"), which happens when the rest of the file is not valid UTF-8."""
+    if text.startswith(BOM_TEXT):
+        return text[len(BOM_TEXT):]
+    if text.startswith(MISREAD_BOM):
+        return text[len(MISREAD_BOM):]
+    return text
+
+
+def clean_column_name(name: object) -> str:
+    """Header name with any byte-order mark (see :func:`strip_byte_order_mark`) and surrounding spaces removed."""
+    return strip_byte_order_mark(str(name).replace(BOM_TEXT, "").strip()).strip()
+
+
 def _clean_name(name: object) -> str:
-    """Header name with the byte-order mark and surrounding spaces removed."""
-    return str(name).replace("﻿", "").strip()
+    """Header name with the byte-order mark and surrounding spaces removed (:func:`clean_column_name`)."""
+    return clean_column_name(name)
 
 
 def _columns_equal(a: pd.Series, b: pd.Series) -> bool:
@@ -272,6 +323,10 @@ def read_flow_csv(
     started = time.perf_counter()
     label = _source_label(source, name)
     data = _as_input(source)
+    wide = wide_text_encoding(_first_bytes(data))
+    if wide is not None:
+        raise DataFileError(f"{label} is saved as {wide} text, which Graticule does not read. Save it again as a "
+                            "UTF-8 CSV (Windows-1252 and Latin-1 also work) and try once more.")
     raw, used_engine, used_encoding, note = _read_raw(data, engine, nrows)
     del data
     report = FileReadReport(name=label, rows_read=len(raw), encoding=used_encoding, engine=used_engine,

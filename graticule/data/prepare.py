@@ -58,7 +58,7 @@ from graticule.data.sampling import (
     sample_positions,
     target_for_mode,
 )
-from graticule.schema import EXPECTED_BY_NAME, EXPECTED_FILES, FEATURES, LABEL, is_benign
+from graticule.schema import EXPECTED_BY_NAME, EXPECTED_FILES, FEATURES, LABEL, is_normal_traffic
 from graticule.settings import NONFINITE_STRATEGIES
 
 # Part of the UI cache key for per-file results: bump when the per-file stage changes.
@@ -448,6 +448,10 @@ class PreparedDataset:
     ``peak_memory_mb`` is the highest working set of the whole process during the draw, so in a long-running
     server it includes memory held before the draw began (cached files, other samples); ``memory_start_mb`` is
     the working set when the draw began, and :attr:`memory_rise_mb` the difference.
+
+    ``copies`` (int64, one entry per row of ``frame``, or None) says how many rows of the files, after the bad-value
+    strategy, each sampled row stands for: itself plus the exact repeats of it that were removed within and across
+    files. Readings count each distinct flow once; these counts say how much traffic each one represents.
     """
 
     frame: pd.DataFrame
@@ -468,6 +472,7 @@ class PreparedDataset:
     step_seconds: dict[str, float] = field(default_factory=dict)
     file_timings: dict[str, FileTiming] = field(default_factory=dict)
     memory_start_mb: float | None = None
+    copies: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def features(self) -> pd.DataFrame:
         """The 77 float32 feature columns (a read-only view: copy before modifying)."""
@@ -589,7 +594,7 @@ class PreparedDataset:
         """One row per class: kind, rows available after cleaning, rows in the sample and share of the sample."""
         total = max(self.rows_sampled, 1)
         rows = [
-            {"Class": name, "Kind": "Normal" if is_benign(name) else "Attack", "Available": available,
+            {"Class": name, "Kind": "Normal" if is_normal_traffic(name) else "Attack", "Available": available,
              "In sample": self.sampling.after.get(name, 0),
              "Share of sample": self.sampling.after.get(name, 0) / total}
             for name, available in self.sampling.before.items()
@@ -792,6 +797,7 @@ def prepare_dataset(
         if conflicts.rows_removed:
             file_id, local = file_id[survive], local[survive]
             classes = classes[survive].reset_index(drop=True)
+            weights = weights[survive]
         steps["conflicts"] = time.perf_counter() - mark
         if len(classes) == 0:
             raise DataFileError(_nothing_left_message(sources, nonfinite, within, across, conflicts))
@@ -801,10 +807,13 @@ def prepare_dataset(
         notify("Drawing the rare-aware sample", 0.92)
         positions, sampling_report = sample_positions(classes, int(request.row_budget), int(request.seed))
         file_id, local = file_id[positions], local[positions]
+        weights = np.asarray(weights, dtype=np.int64)[positions]
         sampled_classes = classes.iloc[positions].reset_index(drop=True)
         parts = []
+        copies_parts = []
         for index, source in enumerate(sources):
             at = source.stage.positions[local[file_id == index]]
+            copies_parts.append(weights[file_id == index])
             part = source.frame.iloc[at][[*FEATURES, LABEL]]
             if strategy != "drop":
                 part, _ = apply_nonfinite_strategy(part, strategy)  # type: ignore[arg-type]
@@ -814,6 +823,7 @@ def prepare_dataset(
         out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=[*FEATURES, LABEL, ROW_COL])
         out.insert(len(FEATURES) + 1, FILE_COL, pd.Categorical.from_codes(file_id, categories=names))
         out[ROW_COL] = out[ROW_COL].astype(np.int32)
+        row_copies = np.concatenate(copies_parts) if copies_parts else np.empty(0, np.int64)
         steps["sampling"] = time.perf_counter() - mark
 
         mark = time.perf_counter()
@@ -832,4 +842,5 @@ def prepare_dataset(
         class_counts=class_counts, single_class=note is not None, single_class_message=note,
         fingerprint=fingerprint, seconds=time.perf_counter() - started, peak_memory_mb=watch.peak_mb,
         step_seconds=steps, file_timings={s.name: s.timing for s in sources}, memory_start_mb=watch.start_mb,
+        copies=row_copies,
     )

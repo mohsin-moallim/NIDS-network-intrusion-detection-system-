@@ -60,10 +60,14 @@ def settings() -> AppSettings:
 
 
 def update_settings(new: AppSettings) -> AppSettings:
-    """Validate, store and persist new settings; returns the validated copy."""
+    """Validate new settings, use them in this session and write them to disk; returns the validated copy.
+
+    The session takes the new values first, so they apply even when writing the file fails; that ``OSError`` (for
+    example another program holding ``local_settings.json``) is raised for the caller to report.
+    """
     clean = new.validated()
-    save_settings(clean)
     st.session_state[SETTINGS] = clean
+    save_settings(clean)
     return clean
 
 

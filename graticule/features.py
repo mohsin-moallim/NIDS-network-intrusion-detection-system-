@@ -235,10 +235,15 @@ def rank_features(
 
     ``callbacks`` are XGBoost training callbacks for the ranking model (progress, or stopping it early when a fit
     is cancelled; a callback that stops it leaves a ranking from the rounds done so far). The model is thrown away
-    afterwards, so they are never kept anywhere.
+    afterwards, so they are never kept anywhere. Like every model Graticule fits, it is fitted through
+    :func:`graticule.models.train.fit_model`, so ``FIT_CALLS`` counts it (key ``RANKING_KEY``).
     """
     from sklearn.utils.class_weight import compute_sample_weight
     from xgboost import XGBClassifier
+
+    # Imported here: the trainer imports this module, so a module-level import would be circular.
+    from graticule.models.train import RANKING_KEY, fit_model
+    from graticule.models.zoo import BuildContext
 
     names = [str(n) for n in feature_names]
     if len(set(names)) != len(names):
@@ -276,7 +281,8 @@ def rank_features(
         random_state=seed,
         callbacks=list(callbacks) if callbacks else None,
     )
-    model.fit(X, codes, sample_weight=compute_sample_weight("balanced", codes))
+    fit_model(RANKING_KEY, model, X, codes, compute_sample_weight("balanced", codes),
+              ctx=BuildContext(n_classes=int(classes.size), seed=int(seed)))
     scores = model.get_booster().get_score(importance_type="total_gain")
 
     # The model was fitted on a plain array, so the booster names columns by position ("f0", "f1", ...). Map by

@@ -28,6 +28,7 @@ from graticule.models import zoo
 from graticule.models.jobs import STAGE_KEY, CancelToken
 from graticule.models.train import (
     FIT_CALLS,
+    RANKING_KEY,
     ChannelResult,
     TrainingData,
     TrainingRun,
@@ -287,7 +288,13 @@ def test_topk_ranks_on_training_rows_only(prepared: PreparedDataset, monkeypatch
         return splits[0]
 
     monkeypatch.setattr(sampling, "stratified_split", remembered_split)
+    before = Counter(FIT_CALLS)
     first = build_training_data(prepared, request)
+    # The ranking model is fitted through fit_model like every channel, so the fit counter sees it (once).
+    assert Counter(FIT_CALLS) - before == Counter({RANKING_KEY: 1})
+    again = build_training_data(prepared, request, ranking=first.feature_choice.ranking)
+    assert again.feature_names == first.feature_names
+    assert Counter(FIT_CALLS) - before == Counter({RANKING_KEY: 1}), "a recorded ranking was fitted again"
     overlap = first.reports["topk_overlap"]
     assert overlap["k"] == 8 and overlap["test_rows"] == len(first.y_test)
     assert overlap["kept"] == 8 and overlap["port_added"] is False
