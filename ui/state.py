@@ -7,15 +7,19 @@ here. Finished fit runs are also kept in a process-wide registry so a browser re
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import streamlit as st
 
 from graticule.settings import AppSettings, load_settings, save_settings
 
+if TYPE_CHECKING:
+    from graticule.data.prepare import PreparedDataset
+
 SETTINGS = "g_settings"
 DONE = "g_done"
 LAST_RUN_ID = "g_last_run_id"
+PREPARED = "g_prepared"
 
 
 def settings() -> AppSettings:
@@ -31,6 +35,22 @@ def update_settings(new: AppSettings) -> AppSettings:
     save_settings(clean)
     st.session_state[SETTINGS] = clean
     return clean
+
+
+def get_prepared() -> "PreparedDataset | None":
+    """The dataset drawn at 01 Sample in this session, if any.
+
+    Later stations read it from here and should compare its ``fingerprint`` with the one their own results were
+    made from, to notice that a new sample has been drawn since.
+    """
+    value = st.session_state.get(PREPARED)
+    # Duck-typed on purpose: after a code reload the stored object's class is an older copy of PreparedDataset.
+    return value if value is not None and hasattr(value, "frame") and hasattr(value, "sampling") else None
+
+
+def set_prepared(dataset: "PreparedDataset") -> None:
+    """Store the dataset drawn at 01 Sample for the other stations of this session."""
+    st.session_state[PREPARED] = dataset
 
 
 def mark_done(station_key: str) -> None:

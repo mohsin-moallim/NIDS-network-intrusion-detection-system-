@@ -97,3 +97,40 @@ Measured on the target laptop (i5-8365U, 16 GB, Windows 11, Python 3.13):
   fonts, including variable-font weights. The body font has no ○ ◆ ▲ glyphs, so the PDF draws those marks as shapes.
 - **Navigation:** Streamlit's navigation menu is hidden and replaced by a custom stepper strip of page links; the brass
   index mark and completion ticks are small CSS on keyed containers.
+
+## Phases 1–2 — data core, 01 Sample, synthetic generator, feature sets (2026-10-01)
+Built concurrently by two implementers, then integrated, reviewed through three lenses (spec conformance, correctness,
+real data), with 17 verified findings fixed.
+- **Reading.** pyarrow first, C engine as fallback; text that is not valid UTF-8 comes back from pyarrow as raw bytes,
+  which moves the reader on to Windows-1252 and then Latin-1. Repeated header names are removed by position after an
+  equality check. Files to be *scored* keep unlabelled rows; files used for training drop and count them.
+- **Pipeline order.** Per file: read → normalise labels → bad-value strategy → within-file duplicates; then cross-file
+  duplicates (files in capture order, Monday first, so the earliest copy is kept) → optional Web Attack merge →
+  rare-aware sample. Exact duplicates are found with a 64-bit hash over the 77 features (−0.0 folded to +0.0, ±inf to NaN)
+  plus the label.
+- **Caching.** Reading and hashing are cached once per file regardless of options; the strategy-specific stage is cached
+  separately and only holds row positions. All 8 files: first draw ~17 s, peak working set ~2.1 GB; drawing again with
+  other options ~4 s. A "Release cached files" button frees the memory.
+- **Identical flows with different labels** are kept and counted by default (options: majority label, or drop).
+  On Wednesday there are 47 such groups (94 rows).
+- **Sampling.** Each class first gets up to a floor of max(1,000, 2 % of the budget) rows — shrunk to budget ÷ classes
+  when needed — and the rest of the budget is shared in proportion to class size. All 11 Heartbleed rows survive a
+  200,000-row Wednesday sample.
+- **Split rule.** Every class gets at least 2 training and 2 test rows; a class with fewer than 4 rows is reported by name.
+- **Degenerate columns.** Constant columns are always left out of "all numeric"; from a group of identical columns only
+  the first is kept. On the real files `SYN Flag Count` equals `Fwd PSH Flags`, so this rule keeps the curated set at 28.
+- **Fingerprint.** A sample's fingerprint covers the request, the (file, row) pairs and labels, but not the folder path,
+  so moving the dataset does not invalidate saved work.
+- **Synthetic generator (original design).** It simulates individual packets from traffic profiles and computes all 77
+  columns with one shared flow meter, so derived columns always agree (subflows = totals, variance = std², rates =
+  totals ÷ duration). Profiles: normal traffic is a mix of web sessions (55 %), DNS (20 %), keep-alive (13 %) and bulk
+  downloads (12 %); attacks are Flood (30 %), Sweep (25 %), Credential Guess (20 %), Web Injection (15 %) and
+  Slow Drip (10 %). A small "blur" share of attacks borrows normal-looking timing and sizes, and some normal flows look like
+  refused connections, so the classes separate clearly but not perfectly (binary balanced accuracy ≈ 0.975 at the default
+  blur, without the port). Like the real files, zero-duration flows produce infinite rates in `Flow Bytes/s` and
+  `Flow Packets/s` only. 40,000 flows take about 1 s.
+- **Top-K ranking** uses a small XGBoost on at most 50,000 training rows. Multi-class ranking is the slow part (~20 s for
+  6 classes), so it runs inside the background fit job.
+- **UI.** Everything that starts work on 01 Sample sits in a form whose only action is *Draw sample*; options repeat the
+  last draw while the Bench holds the defaults. Charts fit their container's width but keep their height, and the
+  station stepper scrolls sideways on narrow screens instead of stacking.
