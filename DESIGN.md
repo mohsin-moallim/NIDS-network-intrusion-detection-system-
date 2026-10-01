@@ -134,3 +134,39 @@ real data), with 17 verified findings fixed.
 - **UI.** Everything that starts work on 01 Sample sits in a form whose only action is *Draw sample*; options repeat the
   last draw while the Bench holds the defaults. Charts fit their container's width but keep their height, and the
   station stepper scrolls sideways on narrow screens instead of stacking.
+
+## Phase 3 — channels, background fitting, 02 Fit (2026-10-01)
+Built by two implementers (core and UI) against a shared interface, integrated, reviewed through three lenses; 17 verified
+findings fixed.
+- **Measured on this laptop** (Wednesday, 200,000-row budget → 145,262 training / 48,421 test rows, curated features):
+
+  | Channel | Binary fit s | Binary bal. acc. | Multi-class fit s | Multi-class bal. acc. |
+  |---|---|---|---|---|
+  | CH1 Random forest | 9.9 | 0.9989 | 7.6 | 0.9964 |
+  | CH2 XGBoost | 5.4 | 0.9995 | 8.2 | 0.9969 |
+  | CH3 RBF SVM (20,000-row cap) | 2.1 | 0.9947 | 2.4 | 0.9922 |
+  | CH4 Neural net (MLP) | 24.1 | 0.9967 | 43.3 | 0.9941 |
+  | CH5 Logistic regression | 3.0 | 0.9723 | 12.4 | 0.9751 |
+
+  Tree channels are far inside the 90 s / 180 s budget; a full five-channel binary fit in the app takes about 40 s.
+- **Class weights.** Every channel receives capped, balanced *sample* weights (no `class_weight` anywhere), solved so
+  no row exceeds the cap and the weights still sum to n. Without the cap an 11-row class such as Heartbleed would weigh
+  thousands of times more than a normal flow.
+- **CH3 (SVM).** A calibration slice (≤ 5,000 rows, at least 20 per class where possible) is set aside first; the SVM is fit
+  on a rare-aware draw of at most the cap from the rest and then calibrated (sigmoid) on that slice in one pass. The
+  cap is shown as a badge: "CH3 trained on 20,000 of 145,262 rows (SVM cap 20,000)".
+- **CH2 (XGBoost)** trains on 90 % of the training rows and uses the other 10 % to stop early.
+- **Trees get no imputer**: scikit-learn 1.9 forests and XGBoost handle missing values themselves.
+- **Background fitting.** The fit runs in a background thread that never touches the UI, one job per process. Cancel is
+  checked between forest chunks, XGBoost rounds, MLP epochs, logistic-regression iterations and scoring batches, so it
+  answers within about 2 s (the SVM's own libsvm fit is the one step that cannot be interrupted).
+  The MLP's per-epoch hook overrides a private scikit-learn method; it is pinned to scikit-learn 1.9.1 and covered by tests.
+- **Warnings from the fit thread** are routed per thread, so notes on one channel never pick up warnings raised elsewhere.
+- **Memory.** Finished runs live in a process-wide registry of the last three; the job object releases its copy.
+- **Top-K** ranking runs inside the job on at most 50,000 training rows (12 real classes: ~19 s), and a test proves test
+  rows cannot change it. Rows that become identical over the chosen columns are removed before the split and reported.
+- **No retraining on unrelated interaction** is enforced by design (forms, a button callback, pages that only read stored
+  results) and proved by `tests/ui/test_no_retrain.py`, which changes every widget on every station after a fit and checks
+  that the fit counter and the stored run object are unchanged.
+- **Honest readings.** The page warns when the loaded sample differs from the one the run was fitted on; scores are shown
+  to four decimals so 0.9995 is never rounded up to a perfect 1.000; the fit time includes building the matrices.

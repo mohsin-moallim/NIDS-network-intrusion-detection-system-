@@ -25,7 +25,7 @@ import math
 import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -37,6 +37,8 @@ from graticule.data.clean import DegenerateReport
 FeatureMode = Literal["curated", "all", "topk"]
 FEATURE_MODES: tuple[FeatureMode, ...] = ("curated", "all", "topk")
 DEFAULT_K = 20
+#: Boosting rounds of the small ranking model behind Top-K.
+RANK_ROUNDS = 120
 
 _BOOSTER_NAME = re.compile(r"f(\d+)")
 
@@ -218,6 +220,7 @@ def rank_features(
     *,
     seed: int,
     max_rows: int = 50_000,
+    callbacks: Sequence[Any] | None = None,
 ) -> list[tuple[str, float]]:
     """Rank features by the total gain they earn in a small XGBoost model; return every feature, best first.
 
@@ -229,6 +232,10 @@ def rank_features(
     (120 rounds, depth 6). Each feature's score is the total gain of all splits on it; features never used score
     0.0. ``X_train`` may be an array whose columns follow ``feature_names`` or a DataFrame holding those columns;
     +/-inf values are treated as missing. Ties keep ``feature_names`` order, so the result is deterministic.
+
+    ``callbacks`` are XGBoost training callbacks for the ranking model (progress, or stopping it early when a fit
+    is cancelled; a callback that stops it leaves a ranking from the rounds done so far). The model is thrown away
+    afterwards, so they are never kept anywhere.
     """
     from sklearn.utils.class_weight import compute_sample_weight
     from xgboost import XGBClassifier
@@ -260,13 +267,14 @@ def rank_features(
     X[~np.isfinite(X)] = np.nan
     model = XGBClassifier(
         tree_method="hist",
-        n_estimators=120,
+        n_estimators=RANK_ROUNDS,
         max_depth=6,
         learning_rate=0.2,
         subsample=0.8,
         colsample_bytree=0.8,
         n_jobs=4,
         random_state=seed,
+        callbacks=list(callbacks) if callbacks else None,
     )
     model.fit(X, codes, sample_weight=compute_sample_weight("balanced", codes))
     scores = model.get_booster().get_score(importance_type="total_gain")

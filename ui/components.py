@@ -51,6 +51,8 @@ def inject_css() -> None:
         .g-attack {{ color: {p.attack}; }}
         .g-alert {{ color: {p.text}; border-color: {p.warning} !important; background: {p.warning_tint}; }}
         .g-mono {{ font-family: '{theme.FONT_MONO}', monospace; }}
+        .g-chips {{ display: flex; flex-wrap: wrap; gap: 4px; margin: 0.1rem 0 0.6rem 0; }}
+        .g-tag {{ color: {p.muted}; border-color: {p.border} !important; font-weight: 500; }}
         .g-cards {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;
                     margin: 0.2rem 0 1rem 0; }}
         .g-card {{ border: 1px solid {p.border}; background: {p.surface}; border-radius: 4px; padding: 8px 10px; }}
@@ -78,8 +80,10 @@ def _station_link(station: Station, current_key: str) -> None:
 def stepper(current_key: str) -> None:
     """The measuring-scale stepper: seven numbered stations, then the Logbook and Bench utilities.
 
-    On narrow screens the strip stays one row and scrolls sideways instead of stacking into a tall list.
+    On narrow screens the strip stays one row and scrolls sideways instead of stacking into a tall list. A background
+    fit that has finished since the last rerun is adopted first, so the 02 Fit tick is right on every page.
     """
+    state.collect_finished_job()
     with st.container(key="g_stepper"):
         cols = st.columns([1] * len(STATIONS) + [0.35] + [1] * len(UTILITIES), gap="small",
                           vertical_alignment="bottom")
@@ -105,6 +109,13 @@ def needs(message: str, station_key: str) -> None:
     page = PAGE_OBJECTS.get(station_key)
     if page is not None:
         st.page_link(page, label=f"Go to {BY_KEY[station_key].label}", icon=":material/arrow_forward:")
+
+
+def chips(labels: Sequence[str]) -> None:
+    """A row of small neutral badges for facts about a result (mode, feature set, a cap that applied...)."""
+    if labels:
+        spans = "".join(f'<span class="g-chip g-tag">{html.escape(str(label))}</span>' for label in labels)
+        st.markdown(f'<div class="g-chips">{spans}</div>', unsafe_allow_html=True)
 
 
 def verdict_chip(label: str, alert: bool = False) -> str:
