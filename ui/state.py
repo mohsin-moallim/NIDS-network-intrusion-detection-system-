@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from graticule.data.prepare import PreparedDataset
     from graticule.models.jobs import TrainingJob
     from graticule.models.train import TrainingRun
+    from graticule.scoring import ScoredBatch
 
 SETTINGS = "g_settings"
 DONE = "g_done"
@@ -44,6 +45,8 @@ HISTORY_RECORDED = "g_history_recorded"
 HISTORY_ERROR = "g_history_error"
 # Run id -> BundleLoadResult for the runs this session loaded from disk at the Logbook.
 LOADED = "g_loaded_bundles"
+# The last file scored at 05 Assay in this session (a graticule.scoring.ScoredBatch), for 07 Record's exports.
+LAST_ASSAY = "g_last_assay"
 
 NoticeKind = Literal["success", "info", "warning", "error"]
 JobOutcome = Literal["stored", "cancelled", "failed", "lost"]
@@ -80,6 +83,24 @@ def set_prepared(dataset: "PreparedDataset") -> None:
     st.session_state[PREPARED] = dataset
 
 
+def set_last_assay(batch: "ScoredBatch") -> None:
+    """Keep the file just scored at 05 Assay as this session's last assay (it replaces the previous one)."""
+    st.session_state[LAST_ASSAY] = batch
+
+
+def get_last_assay() -> "ScoredBatch | None":
+    """The last file scored at 05 Assay in this session (with the run id it was scored by), or ``None``.
+
+    07 Record reads it for its exports: :meth:`graticule.scoring.ScoredBatch.to_csv_bytes` and ``file_name`` give
+    the full scored CSV; ``run_id`` says which run scored it (it may be an earlier run than the current one), and
+    :func:`graticule.report.exports.belongs_to_run` tells whether the current run object scored it (a fit and its
+    copy loaded from disk share an id but not their results).
+    """
+    value = st.session_state.get(LAST_ASSAY)
+    # Duck-typed on purpose: after a code reload the stored object's class is an older copy of ScoredBatch.
+    return value if value is not None and hasattr(value, "frame") and hasattr(value, "unseen_labels") else None
+
+
 def mark_done(station_key: str) -> None:
     """Record that a station produced a result in this session (drives the ticks on the stepper)."""
     done: set[str] = st.session_state.setdefault(DONE, set())
@@ -89,6 +110,11 @@ def mark_done(station_key: str) -> None:
 def is_done(station_key: str) -> bool:
     """True when ``station_key`` has produced a result in this session."""
     return station_key in st.session_state.get(DONE, set())
+
+
+def done_stations() -> frozenset[str]:
+    """The stations that have produced a result in this session (a copy, to compare before and after a draw)."""
+    return frozenset(st.session_state.get(DONE, set()))
 
 
 class RunRegistry:

@@ -12,7 +12,7 @@ from pathlib import Path
 import streamlit as st
 
 from graticule import APP_NAME
-from ui import components
+from ui import components, state
 from ui.pages import assay, bench, fit, logbook, measure, probe, record, sample, sweep
 from ui.stations import ALL_STATIONS, PAGE_OBJECTS
 
@@ -47,7 +47,13 @@ def register_pages() -> list[st.Page]:
 
 
 def main(force_key: str | None = None) -> None:
-    """Configure the page, draw the stepper and run the selected station (or ``force_key`` in tests)."""
+    """Configure the page, draw the stepper and run the selected station (or ``force_key`` in tests).
+
+    The stepper is drawn first, into a placeholder, so it shows while the station draws. A station can earn its tick
+    while it draws (a verdict read at 04 Probe, a finished Assay or record build adopted, a Sweep tick), after the
+    strip was drawn; the strip is then drawn again into the same placeholder, so the tick shows in that very run
+    rather than after the viewer's next click.
+    """
     st.set_page_config(page_title=APP_NAME, page_icon=str(ICON), layout="wide", initial_sidebar_state="collapsed")
     st.logo(str(ICON), size="large")
     pages = register_pages()
@@ -59,8 +65,14 @@ def main(force_key: str | None = None) -> None:
             (s.key for s in ALL_STATIONS if PAGE_OBJECTS[s.key].url_path == current.url_path), "sample"
         )
     components.inject_css()
-    components.stepper(current_key)
+    strip = st.empty()
+    with strip.container():
+        components.stepper(current_key)
+    ticked = state.done_stations()
     if force_key is not None:
         RENDERERS[force_key]()
     else:
         current.run()
+    if state.done_stations() != ticked:
+        with strip.container():
+            components.stepper(current_key, suffix="_now")

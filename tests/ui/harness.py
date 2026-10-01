@@ -40,6 +40,40 @@ def goto(at: AppTest, key: str) -> AppTest:
     return at.run()
 
 
+def app_with_run(run: object, prepared: object | None = None, key: str = "sample",
+                 timeout: float = 120) -> AppTest:
+    """A fresh (not yet run) session at station ``key`` that already holds ``run`` as its current run, and
+    ``prepared`` as its 01 Sample, exactly as after drawing the sample and pressing Fit (both stations ticked).
+
+    Tests of the later stations use it to skip drawing and fitting through the pages (02 Fit has its own tests),
+    which keeps them quick; the run is fitted once per module with ``profile="test"`` models.
+    """
+    from ui import state
+
+    at = new_app(key, timeout)
+    state.run_registry().put(run.run_id, run)  # type: ignore[attr-defined]
+    at.session_state[state.LAST_RUN_ID] = run.run_id  # type: ignore[attr-defined]
+    at.session_state[state.RUN] = run
+    if prepared is not None:
+        at.session_state[state.PREPARED] = prepared
+    at.session_state[state.DONE] = {"sample", "fit"} if prepared is not None else {"fit"}
+    return at
+
+
+def fit_synthetic(flows: int = 2_000, budget: int = 1_200, seed: int = 42, **request: object) -> tuple[object, object]:
+    """A synthetic sample (``flows`` generated, ``budget`` kept) and a ``profile="test"`` fit of it, as 01 Sample
+    and 02 Fit make them; ``request`` sets other :class:`~graticule.models.train.TrainRequest` fields (mode,
+    channels...). Returns (prepared sample, run)."""
+    from graticule.data.prepare import DataRequest, prepare_dataset
+    from graticule.models.train import TrainRequest, build_training_data, train_all
+
+    prepared = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=flows, row_budget=budget, seed=seed))
+    fit = TrainRequest(**{"profile": "test", "seed": seed, **request})  # type: ignore[arg-type]
+    run = train_all(build_training_data(prepared, fit), fit, data_request=prepared.request,
+                    dataset_fingerprint=prepared.fingerprint)
+    return prepared, run
+
+
 def errors(at: AppTest) -> list[str]:
     """Exception texts raised by the last run (empty when it ran cleanly)."""
     return [e.value for e in at.exception]

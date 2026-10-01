@@ -224,6 +224,18 @@ def chart_spec(build: Callable[[], AnyChart]) -> dict[str, Any]:
         return build().to_dict(validate=False)
 
 
+def build_chart(build: Callable[[], AnyChart]) -> AnyChart:
+    """Build a chart with ``build`` without Altair's schema checks at each object's creation.
+
+    The checks run again, on the whole spec, when the chart is serialised with validation (as :func:`to_png` does),
+    so nothing goes unchecked; skipping the first round keeps a PDF record of many charts quick.
+    """
+    from altair.utils.schemapi import debug_mode
+
+    with debug_mode(False):
+        return build()
+
+
 def _ensure_fonts() -> None:
     """Register the bundled fonts with vl-convert once per process."""
     global _fonts_registered
@@ -1018,5 +1030,200 @@ def held_out_classes_chart(
     chart = _layer(rule, dots, text).properties(
         width=width, height=max(80, 24 * len(items)),
         title=alt.Title(title, subtitle=subtitle or "Every reading on this station is measured on these rows."),
+    )
+    return base_config(chart, mode)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# 04 Probe charts: what moved one channel's reading of one flow
+# --------------------------------------------------------------------------------------------------------------
+def value_text(value: float) -> str:
+    """A feature value for a chart label: whole numbers with thousands separators, other values of 1,000 or more
+    with one decimal, smaller ones with four significant digits; ``"missing"`` for NaN and ``"inf"``/``"-inf"``
+    for infinities (and scientific notation from 10^15 up)."""
+    number = float(value)
+    if np.isnan(number):
+        return "missing"
+    if np.isinf(number):
+        return "inf" if number > 0 else "-inf"
+    if abs(number) >= 1e15:
+        return f"{number:.3e}"
+    if number.is_integer():
+        return f"{int(number):,}"
+    if abs(number) >= 1000:
+        return f"{number:,.1f}"
+    return f"{number:.4g}"
+
+
+def contribution_chart(
+    frame: pd.DataFrame,
+    mode: Mode = "light",
+    *,
+    top: int = 12,
+    toward_label: str = "Towards attack",
+    away_label: str = "Towards normal",
+    toward_is_normal: bool = False,
+    title: str = "What moved the reading",
+    subtitle: str | None = None,
+    x_title: str = "Contribution",
+    number_format: str = "+.3f",
+    width: int = DEFAULT_WIDTH,
+) -> alt.LayerChart:
+    """Diverging bars of one flow's feature contributions: the ``top`` largest by size, largest first.
+
+    ``frame`` holds ``feature``, ``value`` (the flow's own value, written after the feature name) and
+    ``contribution`` (positive pushes towards the explained class). Bars right of the zero line push towards it
+    (``toward_label``), bars left of it push away (``away_label``). Bars pushing towards attack are vermilion and
+    bars pushing towards normal blue, the two ends of the diverging ramp (``toward_is_normal`` swaps them when the
+    explained class is the normal one). Every bar carries its signed value, so the direction never rests on colour
+    alone. Bars are clipped to the plot.
+    """
+    from graticule.theme import DIVERGING
+
+    p = palette(mode)
+    ramp = DIVERGING["dark" if mode == "dark" else "light"]
+    towards_normal, towards_attack = ramp[0], ramp[-1]
+    toward_colour, away_colour = ((towards_normal, towards_attack) if toward_is_normal
+                                  else (towards_attack, towards_normal))
+    data = frame[["feature", "value", "contribution"]].copy()
+    data["c"] = data["contribution"].astype(float)
+    data["size"] = data["c"].abs()
+    data = data.sort_values("size", ascending=False, kind="stable").head(max(int(top), 1)).reset_index(drop=True)
+    data["label"] = [f"{name} = {value_text(v)}" for name, v in zip(data["feature"], data["value"])]
+    data["value_text"] = [value_text(v) for v in data["value"]]
+    data["shown"] = [format(float(v), number_format) for v in data["c"]]
+    data["direction"] = np.where(data["c"] >= 0, toward_label, away_label)
+    data = data.drop(columns=["value", "contribution"])
+    low = min(0.0, float(data["c"].min()) if len(data) else 0.0)
+    high = max(0.0, float(data["c"].max()) if len(data) else 0.0)
+    span = high - low
+    if span <= 0:
+        low, high = -1.0, 1.0
+    else:
+        low = low - 0.24 * span if low < 0 else low
+        high = high + 0.24 * span if high > 0 else high
+    x_scale = alt.Scale(domain=[low, high], nice=False)
+    order = list(data["label"])
+    y = alt.Y("label:N", sort=order, title=None, axis=alt.Axis(labelLimit=300, ticks=False, domain=False))
+    colour = alt.Color("direction:N", title=None,
+                       scale=alt.Scale(domain=[toward_label, away_label], range=[toward_colour, away_colour]),
+                       legend=alt.Legend(orient="top", direction="horizontal", labelLimit=320))
+    tooltip = [alt.Tooltip("feature:N", title="Feature"), alt.Tooltip("value_text:N", title="Value in this flow"),
+               alt.Tooltip("shown:N", title=x_title)]
+    base = alt.Chart(data)
+    bars = base.mark_bar(clip=True, height={"band": 0.7}).encode(
+        x=alt.X("c:Q", scale=x_scale, title=x_title, axis=alt.Axis(tickCount=5, labelFlush=True)),
+        x2=alt.X2(datum=0), y=y, color=colour, tooltip=tooltip,
+    )
+    right = base.transform_filter(alt.datum.c >= 0).mark_text(
+        align="left", baseline="middle", dx=4, fontSize=10, color=p.text).encode(
+        x=alt.X("c:Q", scale=x_scale), y=y, text="shown:N")
+    left = base.transform_filter(alt.datum.c < 0).mark_text(
+        align="right", baseline="middle", dx=-4, fontSize=10, color=p.text).encode(
+        x=alt.X("c:Q", scale=x_scale), y=y, text="shown:N")
+    zero = alt.Chart(pd.DataFrame({"zero": [0.0]})).mark_rule(color=p.text, strokeWidth=1).encode(
+        x=alt.X("zero:Q", scale=x_scale))
+    chart = alt.layer(_layer(bars, right, left), zero).properties(
+        width=width, height=max(90, 22 * len(order) + 10), title=alt.Title(title, subtitle=subtitle or ""),
+    )
+    return base_config(chart, mode)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# 06 Sweep: detections over time
+# --------------------------------------------------------------------------------------------------------------
+#: Ticks shown at once by :func:`detections_chart`.
+SWEEP_WINDOW = 120
+#: The two parts of a detections bar, bottom first.
+SWEEP_PARTS: tuple[str, str] = ("Read as attack", "Read as normal")
+
+
+def _tint(colour: str, background: str, strength: float) -> str:
+    """``colour`` laid over ``background`` at ``strength`` (0..1) as an opaque hex colour, e.g. a pale fill."""
+    def channels(value: str) -> list[int]:
+        text = value.lstrip("#")
+        return [int(text[i:i + 2], 16) for i in (0, 2, 4)]
+
+    mixed = [round(b + (c - b) * float(strength)) for c, b in zip(channels(colour), channels(background))]
+    return "#" + "".join(f"{min(max(v, 0), 255):02X}" for v in mixed)
+
+
+def detections_chart(
+    timeline: pd.DataFrame,
+    mode: Mode = "light",
+    *,
+    window: int = SWEEP_WINDOW,
+    title: str = "Detections over time",
+    subtitle: str | None = None,
+    width: int = DEFAULT_WIDTH,
+    height: int = 220,
+) -> alt.LayerChart:
+    """Flows per tick of a live stream, split by the channel's verdict, over the latest ``window`` ticks.
+
+    ``timeline`` holds one row per tick with ``tick``, ``normal``, ``attack_predicted`` and ``alerts`` counts (the
+    shape of :attr:`graticule.simulate.SimulationSession.timeline`). Each tick is one stacked bar: flows read as
+    attack at the bottom (solid vermilion), flows read as normal above them (pale blue with an outline, like the
+    hollow normal mark elsewhere). A warning-coloured triangle sits on each tick that raised alerts and a brass rule
+    marks the newest tick. The axis always spans ``window`` ticks: it fills from the left, then scrolls.
+    """
+    p = palette(mode)
+    span = max(int(window), 1)
+    ticks = timeline.sort_values("tick").tail(span) if len(timeline) else timeline
+    now = int(ticks["tick"].max()) if len(ticks) else 0
+    first = max(1, now - span + 1)
+    last = first + span - 1
+    rows: list[dict[str, object]] = []
+    marks: list[dict[str, object]] = []
+    top = 1.0
+    for record in ticks.itertuples(index=False):
+        tick = int(getattr(record, "tick"))
+        attack = int(getattr(record, "attack_predicted"))
+        normal = int(getattr(record, "normal"))
+        alerts = int(getattr(record, "alerts"))
+        top = max(top, float(attack + normal))
+        for part, lo, hi in ((SWEEP_PARTS[0], 0, attack), (SWEEP_PARTS[1], attack, attack + normal)):
+            if hi > lo:
+                rows.append({"tick": tick, "x0": tick - 0.42, "x1": tick + 0.42, "part": part, "lo": lo, "hi": hi,
+                             "flows": hi - lo})
+        if alerts > 0:
+            marks.append({"tick": tick, "total": attack + normal, "alerts": alerts})
+    bars_data = pd.DataFrame(rows, columns=["tick", "x0", "x1", "part", "lo", "hi", "flows"])
+    alert_data = pd.DataFrame(marks, columns=["tick", "total", "alerts"])
+    x_scale = alt.Scale(domain=[first - 0.5, last + 0.5], nice=False, zero=False)
+    y_scale = alt.Scale(domain=[0.0, top * 1.22], nice=False)
+    x_axis = alt.Axis(format="d", tickMinStep=1, labelFlush=True, labelOverlap="greedy")
+    # The normal part is a pale tint of the benign colour with a full-strength outline (like the hollow normal
+    # mark elsewhere); fill and outline share one legend, so its swatches look like the bars.
+    legend = alt.Legend(orient="top", direction="horizontal", symbolType="square", symbolStrokeWidth=1.2)
+    domain = list(SWEEP_PARTS)
+    colour = alt.Color("part:N", title=None, legend=legend,
+                       scale=alt.Scale(domain=domain, range=[p.attack, _tint(p.benign, p.background, 0.3)]))
+    outline = alt.Stroke("part:N", title=None, legend=legend,
+                         scale=alt.Scale(domain=domain, range=[p.attack, p.benign]))
+    bars = alt.Chart(bars_data).mark_bar(strokeWidth=1, clip=True).encode(
+        x=alt.X("x0:Q", scale=x_scale, title="Tick", axis=x_axis), x2="x1:Q",
+        y=alt.Y("lo:Q", scale=y_scale, title="Flows per tick", axis=alt.Axis(format="~s", tickCount=4)),
+        y2="hi:Q", color=colour, stroke=outline,
+        tooltip=[alt.Tooltip("tick:Q", title="Tick"), alt.Tooltip("part:N", title="Verdict"),
+                 alt.Tooltip("flows:Q", title="Flows", format=",")],
+    )
+    triangles = alt.Chart(alert_data).mark_point(shape="triangle-up", filled=True, size=70, fill=p.warning,
+                                                 stroke=p.text, strokeWidth=0.8, opacity=1, yOffset=-8,
+                                                 clip=True).encode(
+        x=alt.X("tick:Q", scale=x_scale), y=alt.Y("total:Q", scale=y_scale),
+        tooltip=[alt.Tooltip("tick:Q", title="Tick"), alt.Tooltip("alerts:Q", title="Alerts", format=",")],
+    )
+    cursor_data = pd.DataFrame({"tick": [now] if now else [], "label": [f"now: tick {now:,}"] if now else []})
+    cursor = alt.Chart(cursor_data).mark_rule(color=p.secondary, strokeWidth=2).encode(
+        x=alt.X("tick:Q", scale=x_scale))
+    left_side = now - first < span * 0.6
+    cursor_text = alt.Chart(cursor_data).mark_text(align="left" if left_side else "right", baseline="top",
+                                                   dx=5 if left_side else -5, dy=2, fontSize=10,
+                                                   font=FONT_BODY, color=p.secondary).encode(
+        x=alt.X("tick:Q", scale=x_scale), y=alt.value(0), text="label:N")
+    chart = alt.layer(bars, triangles, cursor, cursor_text).properties(
+        width=width, height=int(height),
+        title=alt.Title(title, subtitle=subtitle if subtitle is not None else (
+            "One bar per tick. Triangles: ticks with alerts. Brass line: the latest tick.")),
     )
     return base_config(chart, mode)

@@ -38,6 +38,20 @@ def real_data_dir() -> Path:
 
 
 @pytest.fixture(autouse=True)
+def quick_latency_timing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Time single-flow latency on a 20 ms budget in tests (the app allows 0.25 s per channel).
+
+    The reading stays a real median of at least five timed calls; only the extra calls a forest would get (each one
+    starts a pool of threads) are skipped, which keeps every readings-taking test about 0.2 s quicker.
+    """
+    from graticule import evaluate
+
+    defaults = evaluate.single_flow_latency_ms.__kwdefaults__
+    if defaults is not None and "budget_seconds" in defaults:
+        monkeypatch.setitem(defaults, "budget_seconds", 0.02)
+
+
+@pytest.fixture(autouse=True)
 def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point every settings, model and history path at a temporary folder and clear NIDS_DATA_DIR."""
     monkeypatch.delenv(settings_mod.ENV_DATA_DIR, raising=False)

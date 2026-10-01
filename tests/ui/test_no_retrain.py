@@ -6,29 +6,42 @@ on the Fit page without submitting, visits every other station and changes each 
 after every change), and comes back to 02 Fit. Throughout, ``graticule.models.train.FIT_CALLS`` must not move,
 neither the training matrices nor a training job may be built again, ``prepare_dataset`` must not run again, and
 the stored run and every fitted estimator must stay the very same objects. Widgets are found generically, so
-stations built in later phases are covered as soon as they exist; 03 Measure and the Logbook are checked by name.
+stations built in later phases are covered as soon as they exist; 03 Measure, 04 Probe, 05 Assay, 06 Sweep and the
+Logbook are checked by name.
 
-Buttons are explicit actions and are not pressed while widgets are changed. Save at the Logbook is pressed at the
-end, because it must not fit anything either (the run stays the very same object); a second saved set then gives
-the Logbook's picker something to change to. Loading a saved set and working 03 Measure on the loaded run are
-covered by ``tests/ui/test_saved_runs_measure.py``.
+Buttons are explicit actions and are not pressed while widgets are changed. Afterwards the actions of 04 Probe to
+07 Record are pressed, since none of them may fit anything either: a new held-out flow is drawn at 04 Probe, a file
+is scored at 05 Assay, the simulation is stepped, started (one live tick) and paused at 06 Sweep, and 07 Record
+then offers their exports (its PDF build is checked by the Record and loaded-run tests).
+Save at the Logbook is pressed at the end, because it must not fit anything either (the run stays the very same
+object); a second saved set then gives the Logbook's picker something to change to. Loading a saved set and working
+03 Measure on the loaded run are covered by ``tests/ui/test_saved_runs_measure.py``; the stations 04 to 07 on loaded
+runs by ``tests/ui/test_loaded_runs_stations.py``.
 """
 
 from __future__ import annotations
 
+import io
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pytest
+from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 import graticule.settings as settings_mod
-from graticule import persist
+from graticule import persist, viz
 from graticule.data import prepare
 from graticule.models import train
 from graticule.models.zoo import MODEL_KEYS
+from graticule.schema import FEATURES, LABEL
+from tests.helpers import write_cic_csv
 from tests.ui.harness import (  # noqa: F401
+    different_value,
     draw_synthetic_sample,
     errors,
     fresh_caches,
@@ -37,6 +50,7 @@ from tests.ui.harness import (  # noqa: F401
     touch_every_widget,
 )
 from ui import state, training_ui
+from ui.pages import assay, probe, sweep
 from ui.stations import ALL_STATIONS
 
 pytestmark = pytest.mark.ui
@@ -80,6 +94,19 @@ def training_calls(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     return calls
 
 
+@pytest.fixture
+def quick_charts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Charts of the PDF record are built (and their specs checked) but not rendered."""
+
+    def blank_png(chart: Any, scale: float = 2, *, background: str | None = None) -> bytes:
+        chart.to_dict(validate=False)  # the specs are checked against the schema by tests/unit/test_report_pdf.py
+        buffer = io.BytesIO()
+        Image.new("RGB", (600, 300), "#FFFFFF").save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    monkeypatch.setattr(viz, "to_png", blank_png)
+
+
 def _markdown(at: AppTest) -> str:
     return " ".join(m.value for m in at.markdown)
 
@@ -93,7 +120,8 @@ def _keys(touched: list[str]) -> set[str]:
 
 
 def test_no_widget_anywhere_refits_or_reprepares(fresh_caches: None, prepare_calls: list[prepare.DataRequest],
-                                                 training_calls: Counter[str]) -> None:
+                                                 training_calls: Counter[str], quick_charts: None,
+                                                 tmp_path: Path) -> None:
     at = new_app().run()
     # 4,000 generated flows sampled down to 2,000 rows leave about 1,500 training rows: more than the test-profile
     # SVM cap of 1,000, so CH3 is visibly capped.
@@ -149,6 +177,68 @@ def test_no_widget_anywhere_refits_or_reprepares(fresh_caches: None, prepare_cal
     # 03 Measure: the confusion and ROC views, the detail channel, the folds and channels of cross-validation.
     assert {"ms_cm_show", "ms_roc_zoom", f"ms_detail_channel-{run_id}", "ms_cv_k",
             f"ms_cv_channels-{run_id}"} <= _keys(touched_elsewhere["measure"])
+    # 04 Probe: the flow source (which hides the held-out pickers, changed below), the channels shown, the
+    # explanation's channel and method.
+    assert {probe.SOURCE, probe._key("g_probe_view", run), probe._key("g_probe_xchannel", run),
+            probe._key("g_probe_method_xgboost", run)} <= _keys(touched_elsewhere["probe"])
+    # 05 Assay: the channel (or the consensus) and the alert threshold.
+    assert {assay.channel_key(run), assay.THRESHOLD} <= _keys(touched_elsewhere["assay"])
+    # 06 Sweep: channel, stream, pace, interval, threshold, seed, attack share and mix (of the stream chosen).
+    sweep_keys = _keys(touched_elsewhere["sweep"])
+    assert {f"sw_channel-{run_id}", f"sw_stream-{run_id}", "sw_pace", "sw_interval", "sw_threshold",
+            "sw_seed"} <= sweep_keys
+    for stem in ("sw_share_mode", "sw_share", "sw_mix_mode"):
+        assert any(key.startswith(f"{stem}-{run_id}-") for key in sweep_keys), stem
+
+    # 2b. The actions of 04 Probe to 07 Record: they read, score, stream and lay out, and never fit.
+    goto(at, "probe")
+    at.radio(key=probe.SOURCE).set_value("held_out").run()
+    row_key = probe._key("g_probe_row", run)
+    filter_key = probe._key("g_probe_filter", run)
+    at.selectbox(key=filter_key).set_value(different_value(at.selectbox(key=filter_key), "selectbox")).run()
+    unchanged("choosing the class of held-out flows at probe")
+    at.number_input(key=row_key).set_value(different_value(at.number_input(key=row_key), "number_input")).run()
+    unchanged("choosing a held-out row at probe")
+    before = int(at.number_input(key=row_key).value)
+    at.button(key=probe._key("g_probe_draw", run)).click().run()
+    assert not errors(at), errors(at)
+    assert int(at.number_input(key=row_key).value) != before
+    unchanged("drawing another flow at probe")
+
+    held_out = at.session_state[state.PREPARED].frame.iloc[run.data.test_rows[:60]]
+    values = held_out[list(FEATURES)].to_numpy(dtype=np.float64)
+    rows = [{**dict(zip(FEATURES, (float(v) for v in row))), LABEL: label}
+            for row, label in zip(values, held_out[LABEL].astype(str))]
+    upload = write_cic_csv(tmp_path / "upload.csv", rows).read_bytes()  # type: ignore[arg-type]
+    goto(at, "assay")
+    at.file_uploader(key=assay.UPLOAD).set_value(("upload.csv", upload, "text/csv")).run()
+    at.button(key=assay.SCORE).click().run()
+    assert not errors(at), errors(at)
+    batch = at.session_state[state.LAST_ASSAY]
+    assert batch.rows == 60
+    unchanged("scoring a file at assay")
+
+    goto(at, "sweep")
+    at.button(key="sw_step").click().run()
+    assert not errors(at), errors(at)
+    stream = at.session_state[sweep.SESSION_KEY]
+    assert stream.stats.ticks == 1
+    at.button(key="sw_start").click().run()  # running: the live panel takes a tick with this redraw
+    assert not errors(at), errors(at)
+    assert at.session_state[sweep.RUNNING_KEY] and stream.stats.ticks == 2
+    at.button(key="sw_pause").click().run()
+    assert not errors(at), errors(at)
+    assert not at.session_state[sweep.RUNNING_KEY]
+    assert stream.stats.emitted == 2 * int(at.number_input(key="sw_pace").value)
+    unchanged("stepping the simulation at sweep")
+    # (Reset and later steps are covered by tests/ui/test_sweep_page.py; the record below needs this stream.)
+
+    goto(at, "record")
+    assert not errors(at), errors(at)
+    assert {"rec_dl_assay", "rec_dl_sweep"} <= {b.key for b in at.get("download_button")}
+    unchanged("offering the exports at record")
+    # (Building the PDF after real Assay and Sweep work, with FIT_CALLS unchanged, is covered by
+    # tests/ui/test_loaded_runs_stations.py and tests/ui/test_record_page.py.)
 
     # 3. Back at 02 Fit: the same run, read from memory, with the same readings and the CH3 badge.
     goto(at, "fit")

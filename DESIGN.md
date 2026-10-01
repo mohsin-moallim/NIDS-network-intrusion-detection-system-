@@ -204,3 +204,33 @@ Built concurrently by two implementers, integrated, reviewed through three lense
   run and kept; only the two explicit buttons ever fit anything, and they share one work slot with 02 Fit.
 - **Test suite**: ~100 s by default (421 tests); whole-file real-data checks and the 200k benchmarks run with `-m realdata`
   or `-m slow`.
+
+## Phases 6–8 — 04 Probe, 06 Sweep, 05 Assay, 07 Record (2026-10-01)
+Built by four implementers in parallel, integrated, reviewed through three lenses; 22 verified findings fixed.
+- **04 Probe.** A flow comes from the held-out rows (filter by true class, draw another, or a row number — with its source
+  file and data row), from a class-typical median, or from an editable table (with the 1st–99th percentile range as a
+  guide). Every channel gives a verdict and probability, plus a consensus with its agreement count ("4 of 4 channels
+  agree"). Explanations: **exact XGBoost contributions** (log-odds; the bars, the remaining features and the bias add up to
+  the raw score, which a test checks) and a model-agnostic **reference swap** for every channel (approximate: each feature
+  is replaced by values from 32 background training rows in one batched call). No SHAP dependency.
+- **06 Sweep.** A seeded, UI-free engine replays **only held-out rows with their true labels** for real-data runs (a
+  synthetic stream for synthetic runs), with adjustable pace (flows per tick × tick interval), attack share and attack mix.
+  Live accuracy equals the accuracy over every flow emitted (tested). Only the live panel refreshes each tick; settings
+  survive visits to other stations; nothing is fitted.
+- **One alert rule everywhere.** An alert needs an *attack* verdict whose attack probability reaches the Bench threshold
+  (binary: P(Attack); multi-class: 1 − P(normal)), shared by Probe, Assay, Sweep and the PDF.
+- **05 Assay.** A CSV is read in blocks with the same header, encoding and bad-value handling as training (≈2.8× the file
+  size in memory: Wednesday's 215 MB scored in 4.9 s). Missing feature columns are listed and nothing is scored; uploaded
+  lines are repeated exactly in the download with the verdict, per-class probabilities, attack probability and alert flag
+  appended; accuracy, balanced accuracy and a confusion matrix appear when the file has labels (unknown labels are
+  counted and left out). A Wednesday-fitted run scores the Thursday web-attack file at balanced accuracy 0.50 — an honest
+  sign that one day's model does not transfer to unseen attack types.
+- **07 Record.** A PDF built offline with fpdf2 from the same chart builders as the screen, always in the light palette with
+  the bundled fonts: cover with contents, sample sheet, fit settings and channel notes, readings with a consensus row,
+  per-class table, confusion matrices, ROC and PR curves, importance, timing, Assay and Sweep summaries when present,
+  notes and limitations, and the dataset citation. Normal/attack/alert marks are drawn as shapes because the fonts lack
+  those glyphs. A 5-channel binary record is 9 pages, ~0.35 MB, built in ~7 s. CSV exports (leaderboard, per-class,
+  held-out predictions without feature values, cross-validation, run history, Assay results, Sweep log) download one by
+  one or as a ZIP with a README.
+- **Results belong to the run that made them**: an Assay batch or a built PDF is offered only to that exact run object, so
+  a fit and its loaded copy never mix their results.

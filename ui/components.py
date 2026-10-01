@@ -38,10 +38,10 @@ def inject_css() -> None:
         }}
         [class*="st-key-stn_cur_"] {{ border-bottom: 3px solid {p.secondary}; }}
         [class*="st-key-g_cm_"] {{ overflow-x: auto; }}
-        .st-key-g_stepper [data-testid="stHorizontalBlock"] {{ flex-wrap: nowrap !important; overflow-x: auto;
-            scrollbar-width: thin; }}
-        .st-key-g_stepper [data-testid="stColumn"] {{ min-width: 5.5rem !important; flex: 1 0 auto !important;
-            width: auto !important; }}
+        [class*="st-key-g_stepper"] [data-testid="stHorizontalBlock"] {{ flex-wrap: nowrap !important;
+            overflow-x: auto; scrollbar-width: thin; }}
+        [class*="st-key-g_stepper"] [data-testid="stColumn"] {{ min-width: 5.5rem !important;
+            flex: 1 0 auto !important; width: auto !important; }}
         [class*="st-key-stn_cur_"] a p {{ font-weight: 700; }}
         .g-purpose {{ color: {p.muted}; margin-top: -0.6rem; margin-bottom: 0.8rem; }}
         .g-note {{ border-left: 3px solid {p.secondary}; padding: 0.4rem 0.8rem; background: {p.surface};
@@ -64,36 +64,38 @@ def inject_css() -> None:
     )
 
 
-def _station_link(station: Station, current_key: str) -> None:
+def _station_link(station: Station, current_key: str, suffix: str = "") -> None:
     """Draw one station link inside a keyed container so CSS can mark the current one."""
     prefix = "stn_cur_" if station.key == current_key else "stn_"
     page = PAGE_OBJECTS.get(station.key)
     label = station.label
     if state.is_done(station.key):
         label = f"{label} {theme.GLYPH_DONE}"
-    with st.container(key=f"{prefix}{station.key}"):
+    with st.container(key=f"{prefix}{station.key}{suffix}"):
         if page is not None:
             st.page_link(page, label=label, width="stretch")
         else:
             st.caption(label)
 
 
-def stepper(current_key: str) -> None:
+def stepper(current_key: str, *, suffix: str = "") -> None:
     """The measuring-scale stepper: seven numbered stations, then the Logbook and Bench utilities.
 
     On narrow screens the strip stays one row and scrolls sideways instead of stacking into a tall list. A background
     fit that has finished since the last rerun is adopted first, so the 02 Fit tick is right on every page.
+    ``suffix`` is appended to the strip's element keys, so the shell can draw it a second time in one run (into the
+    same placeholder) when a station earned its tick while it was drawn.
     """
     state.collect_finished_job()
-    with st.container(key="g_stepper"):
+    with st.container(key=f"g_stepper{suffix}"):
         cols = st.columns([1] * len(STATIONS) + [0.35] + [1] * len(UTILITIES), gap="small",
                           vertical_alignment="bottom")
         for col, station in zip(cols[: len(STATIONS)], STATIONS):
             with col:
-                _station_link(station, current_key)
+                _station_link(station, current_key, suffix)
         for col, station in zip(cols[len(STATIONS) + 1 :], UTILITIES):
             with col:
-                _station_link(station, current_key)
+                _station_link(station, current_key, suffix)
     st.divider()
 
 

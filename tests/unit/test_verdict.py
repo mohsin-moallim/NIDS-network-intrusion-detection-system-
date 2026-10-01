@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from graticule.models.verdict import Consensus, combine
+from graticule.models.verdict import Consensus, alert_flags, combine
 
 pytestmark = pytest.mark.unit
 
@@ -48,3 +48,30 @@ def test_consensus_is_immutable() -> None:
     result = combine({"a": np.array([[0.5, 0.5]])})
     with pytest.raises(AttributeError):
         result.voters = 2  # type: ignore[misc]
+
+
+def test_an_alert_needs_an_attack_verdict_and_the_threshold() -> None:
+    """The one alert rule of 04 Probe, 05 Assay and 06 Sweep."""
+    attack = np.array([0.6, 0.6, 0.95, 0.4, np.nan])
+    verdict = np.array([0, 2, 1, 1, 1])  # class 0 is normal traffic
+    assert alert_flags(attack, verdict, 0, 0.5).tolist() == [False, True, True, False, False]
+    assert alert_flags(attack, verdict, None, 0.5).tolist() == [True, True, True, False, False]  # no normal class
+    # The comparison keeps the precision of the probabilities given (float32 against a float32 threshold).
+    close = np.array([np.float32(0.9)], dtype=np.float32)
+    assert alert_flags(close, np.array([1]), 0, 0.9).tolist() == [True]
+    assert alert_flags(0.95, 1, 0, 0.9).tolist() == [True]  # one flow
+    with pytest.raises(ValueError):
+        alert_flags(np.zeros(2), np.zeros(3), 0, 0.5)
+
+
+def test_the_probe_reads_alerts_by_the_same_rule() -> None:
+    """A flow read as BENIGN with 1 - P(BENIGN) above the threshold raises no alert at 04 Probe either."""
+    from graticule.explain import FlowVerdict
+
+    proba = {"a": np.array([0.4, 0.3, 0.3], dtype=np.float32), "b": np.array([0.1, 0.8, 0.1], dtype=np.float32)}
+    verdict = FlowVerdict(classes=("BENIGN", "DoS", "PortScan"), channels=("a", "b"), proba=proba,
+                          consensus=combine(proba))
+    assert verdict.attack_probability("a") == pytest.approx(0.6)
+    assert not verdict.raises_alert("a", 0.5) and verdict.raises_alert("b", 0.5)
+    assert verdict.raises_alert(None, 0.5)  # the consensus reads DoS (0.55) at 1 - 0.25 = 0.75
+    assert not verdict.raises_alert("b", 0.95)
