@@ -1,5 +1,6 @@
 """Saved channel sets: layout and manifest, identical predictions after a real process restart, tamper and version
-checks, no dataset rows on disk (CH3 is never written), and rebuilding/restoring a run without refitting.
+checks, no dataset rows on disk by default (CH3 is left out), the opt-in that saves CH3 with the training rows it is
+made of (declared in the manifest, held by ``svm.joblib`` only), and rebuilding/restoring a run without refitting.
 
 Every fit uses ``profile="test"`` (tiny models) on about 3,000 generated flows, without the destination port.
 Bundles are written under pytest's temporary folders only.
@@ -8,6 +9,7 @@ Bundles are written under pytest's temporary folders only.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -78,9 +80,16 @@ def runs(prepared: PreparedDataset) -> dict[str, TrainingRun]:
 
 @pytest.fixture(scope="module")
 def bundles(runs: dict[str, TrainingRun], tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
-    """Each run saved once into a module-wide temporary folder."""
+    """Each run saved once into a module-wide temporary folder (the default: CH3 left out)."""
     root = tmp_path_factory.mktemp("saved_models")
     return {mode: save_run(run, root) for mode, run in runs.items()}
+
+
+@pytest.fixture(scope="module")
+def svm_bundles(runs: dict[str, TrainingRun], tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    """Each run saved once more, with CH3 by choice, into another module-wide temporary folder."""
+    root = tmp_path_factory.mktemp("saved_models_with_ch3")
+    return {mode: save_run(replace(run, bundle_path=None), root, include_svm=True) for mode, run in runs.items()}
 
 
 def _copy(bundle: Path, tmp_path: Path) -> Path:
@@ -146,12 +155,72 @@ def test_bundle_layout_and_manifest_record_every_required_field(runs: dict[str, 
         if hasattr(evaluate, "classification_metrics"):  # the richer readings, when the evaluation module has them
             assert {"precision", "recall", "f1", "roc_auc", "average_precision"} <= set(entry["evaluation_metrics"])
     assert all(manifest["channels"][key]["status"] == "ok" for key in KEPT)
-    # CH3 was fitted, but its model is made of training rows: recorded (readings, support vectors), never written.
+    # CH3 was fitted, but its model is made of training rows: recorded (readings, support vectors), not written
+    # (the default), and the manifest declares no training rows inside.
     svm = manifest["channels"]["svm"]
     assert svm["status"] == persist.NOT_SAVED and svm["files"] == []
     assert svm["extra"]["support_vectors"] > 0 and persist.UNSAVED_CHANNELS["svm"] in svm["notes"]
     assert manifest["best_channel"] in KEPT and 0 < manifest["best_balanced_accuracy"] <= 1
     assert "no dataset rows" in manifest["contents"] and "CH3" in manifest["contents"]
+    assert "only when you choose to" in manifest["contents"]
+    assert not manifest.get(persist.TRAINING_ROWS_KEY) and persist.training_rows_inside(manifest) == {}
+    assert persist.read_bundle_summary(folder).holds_training_rows == 0
+
+
+@pytest.mark.usefixtures("reloaded")
+def test_saving_ch3_by_choice_writes_it_and_declares_the_training_rows_it_holds(
+        runs: dict[str, TrainingRun], svm_bundles: dict[str, Path]) -> None:
+    for mode, run in runs.items():
+        folder = svm_bundles[mode]
+        names = sorted(p.name for p in folder.iterdir())
+        assert names == sorted(["manifest.json", "forest.joblib", "xgboost.ubj", "xgboost.joblib", "svm.joblib",
+                                "mlp.joblib", "logreg.joblib", "probe.npz", "quantiles.npz"])
+        manifest = _manifest(folder)
+        assert manifest["bundle_format"] == persist.BUNDLE_FORMAT == 2
+        assert set(manifest["files"]) == set(names) - {"manifest.json"}
+        assert manifest["files"]["svm.joblib"] == persist.sha256_file(folder / "svm.joblib")
+        vectors = run.channels["svm"].extra["support_vectors"]
+        assert vectors == persist.support_vector_count(run.channels["svm"].estimator) > 0
+        assert manifest[persist.TRAINING_ROWS_KEY] == {"svm": vectors}
+        assert persist.training_rows_inside(manifest) == {"svm": vectors}
+        svm = manifest["channels"]["svm"]
+        assert svm["status"] == "ok" and svm["files"] == ["svm.joblib"]
+        assert persist.UNSAVED_CHANNELS["svm"] not in svm["notes"]
+        assert manifest["probe"]["channels"] == list(MODEL_KEYS)
+        assert f"svm.joblib (CH3 RBF SVM, saved by choice) holds {vectors:,} training rows" in manifest["contents"]
+        assert "turns back into the original values" in manifest["contents"]
+        assert "No other file holds dataset rows." in manifest["contents"]
+        summary = persist.read_bundle_summary(folder)
+        assert summary.channels == tuple(MODEL_KEYS) and summary.holds_training_rows == vectors
+        assert summary.problem is None
+    # Saving again where the run already has a bundle returns that set as it is (here: with CH3 inside).
+    run = runs["binary"]
+    again = save_run(replace(run, bundle_path=None), svm_bundles["binary"].parent)
+    assert again == svm_bundles["binary"] and (again / "svm.joblib").is_file()
+
+
+def test_an_older_bundle_without_the_training_rows_key_still_loads(runs: dict[str, TrainingRun],
+                                                                   bundles: dict[str, Path], tmp_path: Path) -> None:
+    """Bundles saved before the opt-in existed have no ``training_rows_inside`` key and an older wording of why CH3
+    is left out: they load and verify unchanged, hold no training rows, and the reason is given once, as worded now."""
+    folder = _copy(bundles["binary"], tmp_path)
+    manifest = _manifest(folder)
+    manifest.pop(persist.TRAINING_ROWS_KEY)
+    former = persist._FORMER_UNSAVED_NOTES["svm"][0]
+    notes = manifest["channels"]["svm"]["notes"]
+    notes[notes.index(persist.UNSAVED_CHANNELS["svm"])] = former
+    write_manifest(folder, manifest)  # sealed again, as the older version sealed it
+    bundle = load_bundle(folder)
+    assert persist.TRAINING_ROWS_KEY not in bundle.manifest
+    assert bundle.verification.verified, bundle.verification.message
+    assert bundle.training_rows_inside == {} and set(bundle.channels) == set(KEPT)
+    summary = persist.read_bundle_summary(folder)
+    assert summary.holds_training_rows == 0 and summary.problem is None and summary.channels == KEPT
+    restored = restore_run(bundle, None)
+    svm = restored.channels["svm"]
+    assert svm.status == persist.NOT_SAVED and former not in svm.notes
+    assert svm.notes.count(persist.UNSAVED_CHANNELS["svm"]) == 1
+    assert restored.channels["forest"].notes == runs["binary"].channels["forest"].notes
 
 
 def test_the_manifest_keeps_the_readings_03_measure_computed(runs: dict[str, TrainingRun], tmp_path: Path) -> None:
@@ -192,7 +261,8 @@ from graticule import persist
 
 inputs = np.load(sys.argv[1])
 report = {}
-for folder in sys.argv[3:]:
+for argument in sys.argv[3:]:
+    tag, folder = argument.split("=", 1)
     bundle = persist.load_bundle(Path(folder))
     out = {}
     for key, estimator in bundle.channels.items():
@@ -200,20 +270,23 @@ for folder in sys.argv[3:]:
         proba, labels = persist.score_exactly(estimator, X)
         with persist.deterministic(estimator):
             predicted = np.asarray(estimator.predict(X))
-        out[f"{bundle.mode}__{key}__proba"] = proba
-        out[f"{bundle.mode}__{key}__labels"] = labels
-        out[f"{bundle.mode}__{key}__predict"] = predicted
-    np.savez(Path(sys.argv[2]) / f"{bundle.mode}.npz", **out)
-    report[bundle.mode] = {"verified": bundle.verification.verified, "message": bundle.verification.message,
-                           "channels": list(bundle.channels), "mismatches": bundle.verification.version_mismatches}
+        out[f"{key}__proba"] = proba
+        out[f"{key}__labels"] = labels
+        out[f"{key}__predict"] = predicted
+    np.savez(Path(sys.argv[2]) / f"{tag}.npz", **out)
+    report[tag] = {"mode": bundle.mode, "verified": bundle.verification.verified,
+                   "message": bundle.verification.message, "channels": list(bundle.channels),
+                   "mismatches": bundle.verification.version_mismatches,
+                   "training_rows": bundle.training_rows_inside}
 print(json.dumps(report))
 """
 
 
 @pytest.fixture(scope="module")
-def reloaded(runs: dict[str, TrainingRun], bundles: dict[str, Path],
+def reloaded(runs: dict[str, TrainingRun], bundles: dict[str, Path], svm_bundles: dict[str, Path],
              tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[], tuple[dict[str, Any], Path, dict]]]:
-    """A separate Python process that loads both bundles and scores fresh inputs with every channel.
+    """A separate Python process that loads all four bundles (each mode saved as by default, tagged with the mode,
+    and with CH3 by choice, tagged ``<mode>-svm``) and scores fresh inputs with every channel.
 
     It starts as soon as the bundles exist and runs while the other tests of this module do; the returned function
     waits for it and gives (its report, the folder holding its outputs, the inputs).
@@ -221,8 +294,9 @@ def reloaded(runs: dict[str, TrainingRun], bundles: dict[str, Path],
     folder = tmp_path_factory.mktemp("reloaded")
     inputs = {mode: _fresh_inputs(run) for mode, run in runs.items()}
     np.savez(folder / "inputs.npz", **inputs)
+    tagged = [f"{mode}={bundles[mode]}" for mode in runs] + [f"{mode}-svm={svm_bundles[mode]}" for mode in runs]
     process = subprocess.Popen(
-        [sys.executable, "-c", LOADER, str(folder / "inputs.npz"), str(folder), *(str(bundles[mode]) for mode in runs)],
+        [sys.executable, "-c", LOADER, str(folder / "inputs.npz"), str(folder), *tagged],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
 
@@ -248,6 +322,19 @@ def test_changing_one_byte_of_a_file_is_refused(bundles: dict[str, Path], tmp_pa
     data[len(data) // 2] ^= 0x01
     target.write_bytes(bytes(data))
     with pytest.raises(BundleIntegrityError, match=name.replace(".", r"\.")):
+        load_bundle(folder)
+
+
+def test_a_changed_svm_joblib_is_refused(svm_bundles: dict[str, Path], tmp_path: Path) -> None:
+    folder = _copy(svm_bundles["multiclass"], tmp_path)
+    target = folder / "svm.joblib"
+    data = bytearray(target.read_bytes())
+    data[len(data) // 2] ^= 0x01
+    target.write_bytes(bytes(data))
+    with pytest.raises(BundleIntegrityError, match=r"svm\.joblib in .* does not match the checksum"):
+        load_bundle(folder)
+    target.unlink()
+    with pytest.raises(BundleIntegrityError, match=r"svm\.joblib is missing"):
         load_bundle(folder)
 
 
@@ -411,8 +498,8 @@ def test_the_bundle_holds_no_dataset_rows(runs: dict[str, TrainingRun], bundles:
         assert set(stored.files) == {"quantiles", "levels"}
         assert stored["quantiles"].shape == (101, n_features)
         assert np.array_equal(stored["quantiles"], run.feature_quantiles, equal_nan=True)
-    # The detector finds rows where they are: the in-memory CH3 (never written) holds its support vectors, which
-    # its own pipeline's parameters turn back into training rows.
+    # The detector finds rows where they are: the in-memory CH3 (not written by default) holds its support vectors,
+    # which its own pipeline's parameters turn back into training rows.
     in_memory_svm = run.channels["svm"].estimator
     assert _recoverable_rows(in_memory_svm, run.data.X_train) >= run.channels["svm"].extra["support_vectors"] > 0
     # No model in the bundle holds a training row, neither as stored nor after undoing its pipeline's transforms.
@@ -422,6 +509,32 @@ def test_the_bundle_holds_no_dataset_rows(runs: dict[str, TrainingRun], bundles:
         assert _recoverable_rows(estimator, run.data.X_train) == 0, key
         assert _recoverable_rows(estimator, run.data.X_test) == 0, key
     assert bundle.manifest["channels"]["svm"]["status"] == persist.NOT_SAVED
+
+
+@pytest.mark.parametrize("mode", ["binary", "multiclass"])
+def test_with_ch3_by_choice_the_rows_are_in_svm_joblib_only_and_declared(
+        runs: dict[str, TrainingRun], svm_bundles: dict[str, Path], mode: str) -> None:
+    """The opt-in counterpart: CH3's support vectors (training rows, recoverable through its saved scaler) are in
+    ``svm.joblib`` and nowhere else, no held-out row is anywhere, and the manifest declares how many there are."""
+    run, folder = runs[mode], svm_bundles[mode]
+    rows = _row_set(run.data.X_train) | _row_set(run.data.X_test)
+    declared = _manifest(folder)[persist.TRAINING_ROWS_KEY]
+    vectors = run.channels["svm"].extra["support_vectors"]
+    assert declared == {"svm": vectors} and vectors > 0
+    with np.load(folder / "probe.npz", allow_pickle=False) as probe:
+        assert set(probe.files) == {"vectors", *(f"{p}__{k}" for k in MODEL_KEYS for p in ("proba", "labels"))}
+        assert not (_row_set(probe["vectors"]) & rows)
+    with np.load(folder / "quantiles.npz", allow_pickle=False) as stored:
+        assert set(stored.files) == {"quantiles", "levels"}
+    bundle = load_bundle(folder)
+    assert set(bundle.channels) == set(MODEL_KEYS) and bundle.training_rows_inside == {"svm": vectors}
+    for key, estimator in bundle.channels.items():
+        if key == "svm":
+            assert persist.support_vector_count(estimator) == vectors
+            assert _recoverable_rows(estimator, run.data.X_train) >= vectors, key
+        else:
+            assert _recoverable_rows(estimator, run.data.X_train) == 0, key
+        assert _recoverable_rows(estimator, run.data.X_test) == 0, key
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -479,6 +592,33 @@ def test_restoring_with_rebuilt_rows_reproduces_the_run_without_fitting(runs: di
         assert after.rows_used == before.rows_used and after.notes == before.notes
 
 
+@pytest.mark.parametrize("mode", ["binary", "multiclass"])
+def test_restoring_a_set_with_ch3_brings_it_back_as_an_ordinary_channel(runs: dict[str, TrainingRun],
+                                                                        svm_bundles: dict[str, Path],
+                                                                        mode: str) -> None:
+    original = runs[mode]
+    bundle = load_bundle(svm_bundles[mode])
+    assert bundle.verification.verified and bundle.verification.probes_identical["svm"]
+    calls = sum(FIT_CALLS.values())
+    restored = restore_run(bundle, rebuild_training_data(bundle, data_dir=None))
+    assert sum(FIT_CALLS.values()) == calls
+    assert restored.ok_channels() == original.ok_channels() == list(MODEL_KEYS)
+    before, after = original.channels["svm"], restored.channels["svm"]
+    assert after.status == "ok" and after.estimator is bundle.channels["svm"]
+    assert np.array_equal(after.y_pred, before.y_pred) and np.array_equal(after.proba, before.proba)
+    assert after.extra["metrics"] == pytest.approx(before.extra["metrics"]) and "metrics_saved" not in after.extra
+    assert after.rows_used == before.rows_used and after.notes == before.notes
+    assert persist.UNSAVED_CHANNELS["svm"] not in after.notes
+    for key in KEPT:
+        assert np.array_equal(restored.channels[key].y_pred, original.channels[key].y_pred), key
+    # Without the rows CH3 still scores fresh flows exactly as the fitted model does.
+    bare = restore_run(bundle, None)
+    assert bare.channels["svm"].ok and bare.channels["svm"].proba.shape == (0, len(original.data.classes))
+    fresh = _fresh_inputs(original)
+    loaded, fitted = score_exactly(bare.channels["svm"].estimator, fresh), score_exactly(before.estimator, fresh)
+    assert np.array_equal(loaded[0], fitted[0]) and np.array_equal(loaded[1], fitted[1])
+
+
 def test_restore_scores_in_the_same_blocks_as_the_fit(runs: dict[str, TrainingRun],
                                                       monkeypatch: pytest.MonkeyPatch) -> None:
     """The fit and a restore call each model on the same row ranges, so batch-size rounding cannot differ."""
@@ -502,6 +642,27 @@ def test_restore_scores_in_the_same_blocks_as_the_fit(runs: dict[str, TrainingRu
     assert at_fit.sizes == at_restore.sizes and set(at_fit.sizes[:-1]) == {70}
     assert np.array_equal(train_mod._tidy_proba(fitted_proba, at_fit.classes_, len(run.data.classes)),
                           restored_proba)
+
+
+def test_restoring_reports_every_block_of_rows_a_channel_scores(svm_bundles: dict[str, Path],
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """A loaded CH3 can take as long to read the held-out rows as it did at fit time: the progress moves between
+    blocks, never backwards, and only within that channel's share."""
+    bundle = load_bundle(svm_bundles["binary"])
+    data = rebuild_training_data(bundle, data_dir=None)
+    n, block = len(data.y_test), 100
+    assert n > 2 * block
+    monkeypatch.setattr(train_mod, "SCORE_BLOCK", block)
+    seen: list[tuple[str, float]] = []
+    restored = restore_run(bundle, data, progress=lambda message, fraction: seen.append((message, fraction)))
+    keys = list(bundle.manifest["channels"])
+    assert restored.channels["svm"].ok and keys.index("svm") == 2
+    fractions = [fraction for _, fraction in seen]
+    assert fractions == sorted(fractions) and 0 <= fractions[0] and fractions[-1] < 1
+    ch3 = [(m, f) for m, f in seen if m.startswith("CH3 RBF SVM reads the held-out rows: ")]
+    assert len(ch3) == math.ceil(n / block) - 1
+    assert ch3[0][0] == f"CH3 RBF SVM reads the held-out rows: {block:,} of {n:,}"
+    assert all(2 / len(keys) < f < 3 / len(keys) for _, f in ch3)
 
 
 def test_restoring_without_data_keeps_the_channels_usable(runs: dict[str, TrainingRun],
@@ -603,6 +764,9 @@ def test_listing_and_deleting_bundles(runs: dict[str, TrainingRun], bundles: dic
         _copy(folder, root)
     (root / ".saving-unfinished").mkdir()
     (root / "notes").mkdir()
+    (unfinished,) = persist.find_leftovers(root)  # not a bundle, but named as what it is
+    assert unfinished.path.name == ".saving-unfinished" and unfinished.kind == "save"
+    assert unfinished.files == () and not unfinished.holds_training_rows
     listed = list_bundles(root)
     assert {s.run_id for s in listed} == {run.run_id for run in runs.values()}
     assert [s.created_utc for s in listed] == sorted((s.created_utc for s in listed), reverse=True)
@@ -643,8 +807,99 @@ def test_saving_needs_a_channel_the_bundle_keeps(runs: dict[str, TrainingRun], t
     with pytest.raises(ValueError, match="no channel of this run was fitted"):
         save_run(replace(run, channels=failed, bundle_path=None), tmp_path)
     only_svm = {k: (r if k == "svm" else replace(r, status="failed", estimator=None)) for k, r in run.channels.items()}
-    with pytest.raises(ValueError, match="CH3 RBF SVM is not kept in saved sets"):
+    with pytest.raises(ValueError, match="the only fitted channel is CH3 RBF SVM, which saved sets leave out unless "
+                                         "it is saved by choice"):
         save_run(replace(run, channels=only_svm, bundle_path=None), tmp_path)
+    assert not list(tmp_path.iterdir())
+    # With the opt-in, a run whose only fitted channel is CH3 is saved, and loads back verified.
+    folder = save_run(replace(run, channels=only_svm, bundle_path=None), tmp_path, include_svm=True)
+    assert sorted(p.name for p in folder.iterdir()) == ["manifest.json", "probe.npz", "quantiles.npz", "svm.joblib"]
+    manifest = _manifest(folder)
+    assert manifest["best_channel"] == "svm" and manifest["probe"]["channels"] == ["svm"]
+    assert manifest[persist.TRAINING_ROWS_KEY] == {"svm": run.channels["svm"].extra["support_vectors"]}
+    bundle = load_bundle(folder)
+    assert bundle.verification.verified, bundle.verification.message
+    assert bundle.verification.message == "Verified: the only channel reproduced its saved probe readings exactly."
+    assert list(bundle.channels) == ["svm"]
+    # Saved already: saving again returns that set as it is, whatever include_svm says.
+    assert save_run(replace(run, channels=only_svm, bundle_path=None), tmp_path) == folder
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Saves and deletes that stop halfway (a file held by another program)
+# --------------------------------------------------------------------------------------------------------------
+def test_a_delete_that_stops_halfway_puts_the_set_back_or_names_what_is_left(
+        runs: dict[str, TrainingRun], svm_bundles: dict[str, Path], tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "models"
+    folder = _copy(svm_bundles["binary"], root)
+    names = sorted(p.name for p in folder.iterdir())
+    vectors = runs["binary"].channels["svm"].extra["support_vectors"]
+    real_remove, real_replace = persist._remove_file, persist.replace_with_retry
+
+    def held(path: Path, retries: int = 3) -> None:
+        if Path(path).name == "svm.joblib":
+            raise PermissionError(32, "The file is held by another program", str(path))
+        real_remove(path, retries)
+
+    monkeypatch.setattr(persist, "_remove_file", held)
+    # CH3's rows go first, so nothing else was removed yet: the set is put back whole and listed again.
+    with pytest.raises(persist.BundleDeleteError, match="put back under its own name"):
+        delete_bundle(folder)
+    assert sorted(p.name for p in folder.iterdir()) == names and persist.find_leftovers(root) == []
+    (summary,) = list_bundles(root)
+    assert summary.path == folder and summary.holds_training_rows == vectors
+
+    # When it cannot even be put back, the hidden folder is named and listed as a leftover holding CH3's rows.
+    def no_way_back(source: Path, target: Path, retries: int = 3) -> None:
+        if Path(source).name.startswith(persist.DELETING_PREFIX):
+            raise PermissionError(5, "Access is denied", str(source))
+        real_replace(source, target, retries)
+
+    monkeypatch.setattr(persist, "replace_with_retry", no_way_back)
+    with pytest.raises(persist.BundleDeleteError, match="is left over, holding .*svm.joblib") as caught:
+        delete_bundle(folder)
+    assert "svm.joblib among them still holds CH3's training rows" in str(caught.value)
+    assert not folder.exists() and list_bundles(root) == []
+    (leftover,) = persist.find_leftovers(root)
+    assert leftover.kind == "delete" and leftover.holds_training_rows and list(leftover.files) == names
+    assert leftover.path.name.startswith(f"{persist.DELETING_PREFIX}{folder.name}-")
+    assert persist.find_leftovers(root, min_age_seconds=3_600) == []  # a folder in use now is not offered
+    persist.remove_leftover(leftover.path)
+    assert persist.find_leftovers(root) == [] and not list(root.iterdir())
+    persist.remove_leftover(leftover.path)  # gone already: nothing to do
+    (root / "notes").mkdir()
+    with pytest.raises(ValueError, match="not the work folder"):
+        persist.remove_leftover(root / "notes")
+    assert (root / "notes").is_dir()
+
+
+def test_a_save_that_fails_and_cannot_clear_up_names_what_is_left(runs: dict[str, TrainingRun], tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    run = replace(runs["binary"], bundle_path=None)
+    real_remove_tree = persist._remove_tree
+
+    def refused(source: Path, target: Path, retries: int = 3) -> None:
+        raise PermissionError(5, "Access is denied", str(source))
+
+    def stuck(folder: Path, retries: int = 3) -> None:
+        raise PermissionError(32, "The file is held by another program", str(folder))
+
+    monkeypatch.setattr(persist, "replace_with_retry", refused)
+    monkeypatch.setattr(persist, "_remove_tree", stuck)
+    with pytest.raises(OSError, match="is left over, holding") as caught:
+        save_run(run, tmp_path, include_svm=True)
+    assert "svm.joblib among them still holds CH3's training rows" in str(caught.value)
+    assert isinstance(caught.value.__cause__, PermissionError) and run.bundle_path is None
+    monkeypatch.setattr(persist, "_remove_tree", real_remove_tree)
+    (leftover,) = persist.find_leftovers(tmp_path)
+    assert leftover.kind == "save" and leftover.holds_training_rows and "svm.joblib" in leftover.files
+    assert leftover.path.name.startswith(f"{persist.SAVING_PREFIX}{run.run_id}-") and list_bundles(tmp_path) == []
+    persist.remove_leftover(leftover.path)
+    assert not list(tmp_path.iterdir())
+    # When the clean-up works, a failed save leaves nothing behind and raises its own error.
+    with pytest.raises(PermissionError, match="Access is denied"):
+        save_run(run, tmp_path, include_svm=True)
     assert not list(tmp_path.iterdir())
 
 
@@ -670,18 +925,23 @@ def test_a_reloaded_bundle_predicts_identically_in_a_separate_process(
         runs: dict[str, TrainingRun], reloaded: Callable[[], tuple[dict[str, Any], Path, dict]]) -> None:
     report, tmp_path, inputs = reloaded()
     for mode, run in runs.items():
-        assert report[mode]["verified"], report[mode]
-        assert report[mode]["message"] == "Verified: all 4 channels reproduced their saved probe readings exactly."
-        assert report[mode]["channels"] == list(KEPT) and report[mode]["mismatches"] == {}
-        with np.load(tmp_path / f"{mode}.npz") as reloaded:
-            for key in KEPT:
-                estimator = run.channels[key].estimator
-                proba, labels = score_exactly(estimator, inputs[mode])
-                with persist.deterministic(estimator):
-                    predicted = np.asarray(estimator.predict(inputs[mode]))
-                assert np.array_equal(reloaded[f"{mode}__{key}__proba"], proba), (mode, key)
-                assert np.array_equal(reloaded[f"{mode}__{key}__labels"], labels), (mode, key)
-                assert np.array_equal(reloaded[f"{mode}__{key}__predict"], predicted), (mode, key)
+        # As saved by default (four channels), and with CH3 by choice (all five, CH3 verified like the others).
+        for tag, channels in ((mode, list(KEPT)), (f"{mode}-svm", list(MODEL_KEYS))):
+            assert report[tag]["mode"] == mode and report[tag]["verified"], report[tag]
+            assert report[tag]["message"] == (f"Verified: all {len(channels)} channels reproduced their saved probe "
+                                              "readings exactly.")
+            assert report[tag]["channels"] == channels and report[tag]["mismatches"] == {}
+            expected_rows = {"svm": run.channels["svm"].extra["support_vectors"]} if "svm" in channels else {}
+            assert report[tag]["training_rows"] == expected_rows
+            with np.load(tmp_path / f"{tag}.npz") as reloaded:
+                for key in channels:
+                    estimator = run.channels[key].estimator
+                    proba, labels = score_exactly(estimator, inputs[mode])
+                    with persist.deterministic(estimator):
+                        predicted = np.asarray(estimator.predict(inputs[mode]))
+                    assert np.array_equal(reloaded[f"{key}__proba"], proba), (tag, key)
+                    assert np.array_equal(reloaded[f"{key}__labels"], labels), (tag, key)
+                    assert np.array_equal(reloaded[f"{key}__predict"], predicted), (tag, key)
 
 
 # --------------------------------------------------------------------------------------------------------------

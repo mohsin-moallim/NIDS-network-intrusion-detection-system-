@@ -402,7 +402,8 @@ def _results(batch: ScoredBatch, run: TrainingRun) -> None:
     elif not exports.belongs_to_run(batch, run):
         before = "as fitted" if getattr(batch, "run_origin", "fitted") == "fitted" else "as loaded from disk earlier"
         st.caption(f"These readings were taken with another copy of run {run.run_id} ({before}), not with the one "
-                   "in use now (a saved set never holds CH3, and may lack its held-out rows), so 07 Record leaves "
+                   "in use now (a saved set holds CH3 only when it was saved by choice, and may lack its held-out "
+                   "rows), so 07 Record leaves "
                    "them out. Press Score file to score the file with the run in use.")
     else:
         chosen = st.session_state.get(channel_key(run), batch.channel)

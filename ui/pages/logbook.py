@@ -1,10 +1,13 @@
 """Logbook station: saved channel sets (save, load with verification, delete) and the history of every fit.
 
-Saving writes the session's current run as a bundle (:mod:`graticule.persist`); CH3 is never written, because a
-kernel SVM is made of training rows. Loading checks the bundle's files, re-scores its probe vectors and, where the
-data allow, rebuilds the held-out rows, with a progress bar through every stage; the loaded run then becomes the
-current run for every station, marked "loaded from disk". Loading over a fit that is not saved, deleting a saved
-set and clearing the history all ask for a confirmation first. Nothing here fits a channel.
+Saving writes the session's current run as a bundle (:mod:`graticule.persist`). CH3 is left out unless the viewer
+ticks "Also save CH3 (RBF SVM)", a box drawn unticked for every new run: a kernel SVM is made of training rows, so
+saving it writes them (its support vectors) into the run's folder under saved_models. Loading checks the bundle's
+files, re-scores its probe vectors and, where the data allow, rebuilds the held-out rows, with a progress bar
+through every stage; the loaded run then becomes the current run for every station, marked "loaded from disk".
+Loading over a fit that is not saved, deleting a saved set and clearing the history all ask for a confirmation
+first. Hidden folders that a save or a delete left behind (a file held by another program) are named, with a
+note when one still holds CH3's training rows, and can be removed. Nothing here fits a channel.
 """
 
 from __future__ import annotations
@@ -29,11 +32,17 @@ CONFIRM_CLEAR = "lb_confirm_clear"
 # Run id of the saved set waiting to be loaded over an unsaved fit.
 CONFIRM_LOAD = "lb_confirm_load"
 PICK = "lb_pick"
+#: Key prefix of the "Also save CH3" box; the run id completes it, so every new run starts unticked.
+SAVE_SVM = "lb_save_svm"
 #: History lines shown in the table (the CSV holds every line).
 HISTORY_SHOWN = 200
+#: Seconds a hidden work folder in saved_models must stand unchanged before it is shown as left over (a save or a
+#: delete still running in another session keeps changing its folder).
+LEFTOVER_MIN_AGE = 30.0
 
-BUNDLE_COLUMNS: tuple[str, ...] = ("Run", "Fitted (UTC)", "Mode", "Source", "Rows", "Channels", "Best channel",
-                                   "Best balanced accuracy", "Check", "Folder")
+BUNDLE_COLUMNS: tuple[str, ...] = ("Run", "Fitted (UTC)", "Mode", "Source", "Rows", "Channels",
+                                   "Training rows inside", "Best channel", "Best balanced accuracy", "Check",
+                                   "Folder")
 HISTORY_COLUMNS: dict[str, str] = {
     "run_id": "Run", "created_utc": "Fitted (UTC)", "source": "Source", "files": "Files", "mode": "Mode",
     "feature_mode": "Features", "rows_train": "Train rows", "rows_test": "Test rows", "channels": "Channels",
@@ -74,6 +83,16 @@ def _mode_text(mode: str) -> str:
     return {"binary": "binary", "multiclass": "multi-class"}.get(mode, mode)
 
 
+def save_svm_key(run: TrainingRun) -> str:
+    """Widget key of the "Also save CH3" box for ``run`` (one per run, so it is unticked for every new run)."""
+    return f"{SAVE_SVM}-{run.run_id}"
+
+
+def _held_rows_text(count: int) -> str:
+    """Chip text for a set that holds CH3's training rows."""
+    return f"holds {count:,} training rows (CH3)"
+
+
 # --------------------------------------------------------------------------------------------------------------
 # The run on the bench
 # --------------------------------------------------------------------------------------------------------------
@@ -86,6 +105,9 @@ def _loaded_panel(run: TrainingRun) -> None:
     if info is not None:
         chips.append("verified" if info.verified else "not verified")
     chips.append("held-out rows rebuilt" if run.has_test_rows else "no held-out rows")
+    held = state.saved_training_rows(run)  # rows in the set on disk now: 0 once its folder is deleted
+    if held:
+        chips.append(_held_rows_text(held))
     components.chips(chips)
     where = run.bundle_path or "an unknown folder"
     st.markdown(f'Loaded from <span class="g-mono">{html.escape(where)}</span>'
@@ -95,6 +117,16 @@ def _loaded_panel(run: TrainingRun) -> None:
         tone = {"success": st.success, "warning": st.warning}.get(info.kind, st.error)
         tone(info.verification)
         st.caption(info.rows_note)
+    if held:
+        st.caption(f"This set {_held_rows_text(held)}: CH3 was saved with it by choice, and its model is its "
+                   f"{held:,} support vectors, training rows stored after gap filling, signed logarithm and "
+                   "standardisation, which its saved scaler turns back into the original values. They stay in this "
+                   "machine's saved_models folder, which git ignores.")
+    elif folder is None and (vectors := state.ch3_support_vectors(run)):
+        st.caption(f"The set this run was loaded from held CH3's {vectors:,} training rows (its support vectors). "
+                   "That folder has since been deleted, and with it the rows (a delete that stopped halfway would "
+                   "be listed under Saved channel sets below); CH3 stays on the bench, in memory, like the other "
+                   "channels.")
     if not run.has_test_rows:
         st.caption("Without the held-out rows, the stations can score single flows and uploaded files with these "
                    "channels, but cannot show readings on the test rows or replay them.")
@@ -116,23 +148,40 @@ def _current_section(run: TrainingRun | None) -> None:
                       f"{len(run.ok_channels())} channels: {_badges(run.ok_channels())}",
                       f"fitted {run.created_utc}"])
     folder = state.bundle_on_disk(run)
-    left_out = state.unsaved_channel_note(run)
     if folder is not None:
         st.markdown(f'Saved as <span class="g-mono">{html.escape(str(folder))}</span>.', unsafe_allow_html=True)
+        held = state.saved_training_rows(run)
+        if held:
+            st.caption(f"This set {_held_rows_text(held)}: CH3 was saved with it by choice (its support vectors, in "
+                       "svm.joblib).")
+        left_out = state.unsaved_channel_note(run)
         if left_out:
             st.caption(left_out)
         return
-    st.caption("Saving writes the fitted channels, their settings and readings, a set of synthetic probe flows "
-               "with the channels' readings of them, and per-feature quantiles. No dataset rows are written, so "
-               "CH3 (the kernel SVM, whose model is made of training rows) is never saved.")
-    svm = run.channels.get("svm")
-    if left_out and svm is not None:
-        vectors = (svm.extra or {}).get("support_vectors")
-        count = f" ({int(vectors):,} support vectors)" if isinstance(vectors, (int, float)) else ""
-        st.caption(f"This run's CH3{count} stays out of the saved set; its readings are recorded with it.")
+    what = ("Saving writes the fitted channels, their settings and readings, a set of synthetic probe flows with the "
+            "channels' readings of them, and per-feature quantiles.")
+    include_svm = False
+    vectors = state.ch3_support_vectors(run)
+    if vectors is None:
+        st.caption(f"{what} No dataset rows are written: CH3, the one channel whose model is made of training rows "
+                   "(and which is saved only by choice), has no fitted model in this run.")
+    else:
+        st.caption(f"{what} No dataset rows are written unless you save CH3: the kernel SVM's model is made of "
+                   "training rows, so it is not saved unless you choose to.")
+        include_svm = st.checkbox("Also save CH3 (RBF SVM)", value=False, key=save_svm_key(run))
+        seconds = float(run.channels["svm"].predict_seconds or 0.0)
+        cost = (f" (it took {seconds:,.1f} s at this fit)" if seconds >= 0.1 else "")
+        alone = (" CH3 is the only fitted channel, so without the box there is nothing to save."
+                 if all(key in persist.UNSAVED_CHANNELS for key in run.ok_channels()) else "")
+        st.caption(f"CH3's model is its {vectors:,} support vectors, which are training rows after gap filling, "
+                   "signed logarithm and standardisation; its saved scaler turns them back into the original "
+                   f"values. Ticking writes them into saved_models\\{run.run_id}\\ on this machine (git ignores the "
+                   "folder). Leave it unticked to keep dataset rows out of the project, as by default; CH3's "
+                   "readings are recorded with the set either way. Loading a set that holds CH3 has it read the "
+                   f"held-out rows again, which takes about as long as its scoring did{cost}.{alone}")
     if st.button("Save the current fit", key="lb_save", type="primary"):
         with st.spinner("Saving the channel set"):
-            kind, text = state.save_current_run()
+            kind, text = state.save_current_run(include_svm=bool(include_svm))
         _notice(kind, text)
         st.rerun()
 
@@ -144,7 +193,9 @@ def bundle_table(bundles: list[persist.BundleSummary]) -> pd.DataFrame:
     """The saved sets as a display table, newest first (``Check`` says why Load would refuse a set, if it would)."""
     rows = [{
         "Run": b.run_id, "Fitted (UTC)": b.created_utc, "Mode": _mode_text(b.mode), "Source": b.source,
-        "Rows": int(b.rows), "Channels": _badges(b.channels), "Best channel": _channel_name(b.best_channel),
+        "Rows": int(b.rows), "Channels": _badges(b.channels),
+        "Training rows inside": int(getattr(b, "holds_training_rows", 0) or 0),
+        "Best channel": _channel_name(b.best_channel),
         "Best balanced accuracy": b.best_balanced_accuracy,
         "Check": "manifest intact" if getattr(b, "problem", None) is None else f"refused: {b.problem}",
         "Folder": str(b.path),
@@ -157,7 +208,9 @@ def _bundle_label(summary: persist.BundleSummary) -> str:
     best = (f", best {theme.score_text(summary.best_balanced_accuracy)}"
             if summary.best_balanced_accuracy is not None else "")
     refused = ", will be refused" if getattr(summary, "problem", None) else ""
-    return f"{summary.run_id} ({_mode_text(summary.mode)}, {summary.source}{best}{refused})"
+    held = int(getattr(summary, "holds_training_rows", 0) or 0)
+    rows = f", {_held_rows_text(held)}" if held else ""
+    return f"{summary.run_id} ({_mode_text(summary.mode)}, {summary.source}{best}{rows}{refused})"
 
 
 def _load(path: Path | str, run_id: str, prefix: str = "") -> None:
@@ -194,11 +247,22 @@ def _load_confirmation(summary: persist.BundleSummary, current: TrainingRun) -> 
     with st.container(border=True, key="lb_load_box"):
         st.warning(f"Run {current.run_id} on the bench was fitted in this session and is not saved. Loading "
                    f"{summary.run_id} replaces it, and this session cannot go back to it afterwards.")
+        # The "Also save CH3" box above applies to this save too (unticked unless the viewer ticked it).
+        include_svm = bool(st.session_state.get(save_svm_key(current), False))
+        if state.ch3_support_vectors(current) is not None:
+            if include_svm:
+                st.caption("Saving first includes CH3 (RBF SVM) and its training rows, as ticked above.")
+            elif all(key in persist.UNSAVED_CHANNELS for key in current.ok_channels()):
+                st.caption("Saving first would save nothing: CH3 (RBF SVM) is the only fitted channel, and it is "
+                           "left out unless \"Also save CH3 (RBF SVM)\" above is ticked.")
+            else:
+                st.caption("Saving first leaves CH3 (RBF SVM) out, as by default; tick \"Also save CH3 (RBF SVM)\" "
+                           "above to include it.")
         save_first, anyway, keep = st.columns(3)
         if save_first.button(f"Save {current.run_id}, then load", key="lb_load_save", type="primary",
                              width="stretch"):
             st.session_state.pop(CONFIRM_LOAD, None)
-            kind, text = state.save_current_run()
+            kind, text = state.save_current_run(include_svm=include_svm)
             if kind != "success":
                 _notice(kind, f"{text} Nothing was loaded.")
                 st.rerun()
@@ -223,6 +287,8 @@ def _delete_confirmation(summary: persist.BundleSummary, current: TrainingRun | 
             st.session_state.pop(CONFIRM_DELETE, None)
             try:
                 persist.delete_bundle(summary.path)
+            except persist.BundleDeleteError as exc:  # stopped halfway: the message says where the rest is
+                _notice("error", str(exc))
             except (OSError, persist.BundleIntegrityError) as exc:
                 _notice("error", f"The saved set {summary.run_id} could not be deleted: {exc}")
             else:
@@ -241,6 +307,49 @@ def _unreadable_note(unreadable: list[tuple[Path, str]]) -> None:
         st.caption(f"Not listed, because their manifest cannot be read: {names}{more}.")
 
 
+def _leftover_text(item: persist.LeftoverFolder) -> str:
+    """``.deleting-<id>-<time> (unfinished delete, 2 files, svm.joblib: CH3's training rows)``."""
+    files = f"{len(item.files)} file{'s' if len(item.files) != 1 else ''}"
+    rows = ", svm.joblib: CH3's training rows" if item.holds_training_rows else ""
+    return f"{item.path.name} (unfinished {item.kind}, {files}{rows})"
+
+
+def _leftovers_section() -> None:
+    """Name the hidden work folders a save or a delete left in saved_models, and offer to remove them.
+
+    Only folders unchanged for :data:`LEFTOVER_MIN_AGE` seconds are shown, so a save or a delete still running in
+    another session is never offered for removal.
+    """
+    try:
+        leftovers = persist.find_leftovers(min_age_seconds=LEFTOVER_MIN_AGE)
+    except Exception:  # noqa: BLE001 - an unreadable models folder is reported by the listing above
+        return
+    if not leftovers:
+        return
+    n = len(leftovers)
+    names = "; ".join(_leftover_text(item) for item in leftovers[:5])
+    more = f"; {n - 5} more" if n > 5 else ""
+    rows = sum(1 for item in leftovers if item.holds_training_rows)
+    held = (f" {rows} of them still hold{'s' if rows == 1 else ''} CH3's training rows (svm.joblib, its support "
+            "vectors)." if rows else "")
+    st.warning(f"A save or a delete that did not finish left {n} hidden folder{'s' if n != 1 else ''} in "
+               f"{leftovers[0].path.parent}: {names}{more}.{held} They are not saved sets and cannot be loaded; "
+               "removing them deletes them for good.")
+    if st.button("Remove the leftover folders", key="lb_leftovers"):
+        failed: list[str] = []
+        for item in leftovers:
+            try:
+                persist.remove_leftover(item.path)
+            except (OSError, ValueError) as exc:
+                failed.append(f"{item.path.name} ({state.first_line(str(exc)) or type(exc).__name__})")
+        if failed:
+            _notice("error", f"Not every leftover folder could be removed (another program may still hold a file "
+                             f"in it; try again in a moment): {'; '.join(failed)}.")
+        else:
+            _notice("success", f"Removed {n} leftover folder{'s' if n != 1 else ''}.")
+        st.rerun()
+
+
 def _bundles_section(current: TrainingRun | None) -> None:
     """Table of saved sets with Load and Delete."""
     st.subheader("Saved channel sets", anchor=False)
@@ -253,12 +362,17 @@ def _bundles_section(current: TrainingRun | None) -> None:
         st.caption("No saved channel sets yet. Save a fit above; sets are kept in the saved_models folder of the "
                    "project.")
         _unreadable_note(unreadable)
+        _leftovers_section()
         return
     st.dataframe(
         components.shown_scores(bundle_table(bundles), ("Best balanced accuracy",)), hide_index=True,
         width="stretch",
         column_config={
             "Rows": st.column_config.NumberColumn("Rows", format="localized", help="Training plus test rows."),
+            "Training rows inside": st.column_config.NumberColumn(
+                "Training rows inside", format="localized",
+                help="Dataset rows written into the set: CH3's support vectors when it was saved by choice, "
+                     "else 0."),
             "Best balanced accuracy": st.column_config.NumberColumn("Best balanced accuracy", format="%.4f"),
             "Check": st.column_config.TextColumn("Check", help="Whether the manifest still matches the checksum "
                                                  "recorded in it, read without loading any model."),
@@ -266,6 +380,7 @@ def _bundles_section(current: TrainingRun | None) -> None:
         },
     )
     _unreadable_note(unreadable)
+    _leftovers_section()
     by_id = {b.run_id: b for b in bundles}
     if st.session_state.get(PICK) not in by_id:
         st.session_state[PICK] = bundles[0].run_id

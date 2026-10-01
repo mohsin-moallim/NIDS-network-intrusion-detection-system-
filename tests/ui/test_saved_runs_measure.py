@@ -4,7 +4,8 @@
   Python interpreter running its own headless session), reads at 03 Measure exactly as the original run did in
   memory: the same tables (leaderboard, per-class), the same captions and the same charts, data included. Only the
   single-flow latency is measured afresh on every visit, so that column and its chart are left out of the
-  comparison. The fit uses every channel a saved set keeps (CH3 never is: its model is made of training rows).
+  comparison. The fit uses every channel a saved set keeps by default (CH3 is kept only when saved by choice: its
+  model is made of training rows).
 * Saving, loading and working 03 Measure's views and permutation importance on the loaded run fit nothing; only
   the explicit cross-validation button fits (k folds per chosen channel), on the rebuilt training rows.
 * The manifest keeps the full readings 03 Measure shows (``tests/integration/test_persist.py`` checks that the

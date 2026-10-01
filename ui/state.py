@@ -427,19 +427,90 @@ def bundle_on_disk(run: "TrainingRun") -> Path | None:
     return folder if folder.is_dir() else None
 
 
+#: Why a channel of a fit still on the bench is not in the set it was saved as, and how to include it (keys of
+#: :data:`graticule.persist.UNSAVED_CHANNELS`, whose own reason is the one for a run loaded from disk).
+SAVED_WITHOUT: dict[str, str] = {
+    "svm": ("CH3 RBF SVM was left out of the saved set, as by default: a kernel SVM is made of its training rows "
+            "(its support vectors, standardised). It stays fitted on the bench for this session; to include it in "
+            "the set, delete the set at the Logbook and save again with \"Also save CH3 (RBF SVM)\" ticked."),
+}
+#: The same for a fit not saved yet.
+SAVED_UNLESS_TICKED: dict[str, str] = {
+    "svm": ("CH3 RBF SVM is left out of saved sets unless \"Also save CH3 (RBF SVM)\" is ticked when saving at the "
+            "Logbook: a kernel SVM is made of its training rows (its support vectors, standardised)."),
+}
+
+
+def ch3_support_vectors(run: "TrainingRun") -> int | None:
+    """Support vectors (training rows) of the fitted CH3 of ``run`` held in memory, or None without a fitted CH3."""
+    from graticule import persist
+
+    svm = run.channels.get("svm")
+    if svm is None or not svm.ok:
+        return None
+    vectors = (svm.extra or {}).get("support_vectors")
+    if isinstance(vectors, (int, float)) and not isinstance(vectors, bool) and vectors > 0:
+        return int(vectors)
+    return persist.support_vector_count(svm.estimator)
+
+
+def saved_training_rows(run: "TrainingRun") -> int:
+    """Training rows the saved set of ``run`` holds on disk now (CH3's support vectors, when CH3 was saved by
+    choice), or 0.
+
+    The set's manifest is read (a cheap JSON read). A run with no set on disk (a fit not saved yet, or a set
+    deleted since it was saved or loaded) has none: 0. When the manifest of a loaded run's set cannot be read, the
+    run itself tells (CH3 came back fitted only when its set holds it).
+    """
+    from graticule import persist
+
+    folder = bundle_on_disk(run)
+    if folder is None:
+        return 0
+    try:
+        return int(persist.read_bundle_summary(folder).holds_training_rows)
+    except Exception:  # noqa: BLE001 - an unreadable manifest: only a loaded run still knows what its set held
+        if getattr(run, "origin", "fitted") == "loaded":
+            return ch3_support_vectors(run) or 0
+        return 0
+
+
 def unsaved_channel_note(run: "TrainingRun") -> str:
-    """Why some fitted channels of ``run`` are left out of a saved set (CH3), or "" when none are."""
-    from graticule.persist import UNSAVED_CHANNELS
+    """Why fitted channels of ``run`` are left out of its saved set (CH3 by default), or "" when none are.
 
-    left_out = [key for key in run.ok_channels() if key in UNSAVED_CHANNELS]
-    return " ".join(UNSAVED_CHANNELS[key] for key in left_out)
+    For a run already saved or loaded, what its set really holds decides: CH3 saved by choice is not "left out".
+    A loaded run gives the reason recorded with its set (fit CH3 again to use it); a fit saved without CH3 says
+    that CH3 is still on the bench and how to include it in the set; a fit not saved yet describes the default
+    (CH3 stays out unless "Also save CH3" is ticked).
+    """
+    from graticule import persist
+
+    if getattr(run, "origin", "fitted") == "loaded":
+        left_out = [key for key, result in run.channels.items()
+                    if result.status == persist.NOT_SAVED and key in persist.UNSAVED_CHANNELS]
+        return " ".join(persist.UNSAVED_CHANNELS[key] for key in left_out)
+    left_out = [key for key in run.ok_channels() if key in persist.UNSAVED_CHANNELS]
+    folder = bundle_on_disk(run)
+    if folder is None:
+        return " ".join(SAVED_UNLESS_TICKED.get(key, persist.UNSAVED_CHANNELS[key]) for key in left_out)
+    if left_out:
+        try:
+            inside: tuple[str, ...] = persist.read_bundle_summary(folder).channels
+        except Exception:  # noqa: BLE001 - unreadable: fall back to the default account
+            inside = ()
+        left_out = [key for key in left_out if key not in inside]
+    return " ".join(SAVED_WITHOUT.get(key, persist.UNSAVED_CHANNELS[key]) for key in left_out)
 
 
-def save_current_run() -> tuple[NoticeKind, str]:
+def save_current_run(include_svm: bool = False) -> tuple[NoticeKind, str]:
     """Save this session's current run as a bundle and note the folder in the run history; returns a message.
 
-    Any failure (no channel to keep, a folder of that name already there and damaged, a full disk, a model that
-    cannot be written) comes back as an error message; nothing is raised into the page.
+    ``include_svm`` saves CH3 too (by choice: its model holds training rows, see
+    :func:`graticule.persist.save_run`). The message says whether CH3 was saved, and how many training rows the set
+    then holds, or that it was left out and how to include it. A run whose only fitted channel is CH3 is refused
+    without ``include_svm``, with a message naming the box that saves it. Any failure (no channel to keep, a folder
+    of that name already there and damaged, a full disk, a model that cannot be written) comes back as an error
+    message; nothing is raised into the page.
     """
     run = current_run()
     if run is None:
@@ -447,8 +518,16 @@ def save_current_run() -> tuple[NoticeKind, str]:
     from graticule import persist
     from graticule.history import RunHistory
 
+    fitted = run.ok_channels()
+    if (not include_svm and fitted and all(key in persist.UNSAVED_CHANNELS for key in fitted)
+            and bundle_on_disk(run) is None):
+        vectors = ch3_support_vectors(run)
+        rows = f" with its {vectors:,} training rows (its support vectors)" if vectors else ""
+        return "error", (f"Run {run.run_id} was not saved: its only fitted channel is CH3 (RBF SVM), which a saved "
+                         "set leaves out unless \"Also save CH3 (RBF SVM)\" is ticked, because a kernel SVM is made "
+                         f"of its training rows. Tick the box to save CH3{rows}, or fit other channels at 02 Fit.")
     try:
-        path = persist.save_run(run)
+        path = persist.save_run(run, include_svm=include_svm)
     except Exception as exc:  # noqa: BLE001 - save_run cleans up its temporary folder; the page only reports
         return "error", f"Run {run.run_id} could not be saved: {first_line(str(exc)) or type(exc).__name__}"
     try:
@@ -458,8 +537,19 @@ def save_current_run() -> tuple[NoticeKind, str]:
             RunHistory().mark_saved(run.run_id, path)
     except Exception as exc:  # noqa: BLE001 - the bundle is saved; the history line is secondary
         st.session_state[HISTORY_ERROR] = f"The run history could not be updated ({type(exc).__name__}: {exc})."
+    message = f"Saved run {run.run_id} to {path}."
+    held = saved_training_rows(run)
+    if held:
+        return "success", (f"{message} CH3 (RBF SVM) was saved with it, by choice: the set holds {held:,} training "
+                           "rows (CH3's support vectors, in svm.joblib), on this machine only.")
     note = unsaved_channel_note(run)
-    return "success", f"Saved run {run.run_id} to {path}." + (f" {note}" if note else "")
+    if include_svm and note:
+        # Ticked, but the run had already been saved without CH3 (by another session): that set stands as it is.
+        return "warning", (f"{message} CH3 (RBF SVM) is not in it: this run had already been saved without CH3 "
+                           "(from another session), and an existing set is left as it is. CH3 stays fitted on the "
+                           "bench; to include it in the set, delete the set at the Logbook and save again with "
+                           "\"Also save CH3 (RBF SVM)\" ticked.")
+    return "success", message + (f" {note}" if note else "")
 
 
 @dataclass(frozen=True)
@@ -469,6 +559,8 @@ class BundleLoadResult:
     ``kind`` is the tone of ``message`` (success when verified, warning when not verified because the libraries
     changed, error when refused or when verification failed). ``verification`` is the verification sentence and
     ``rows_note`` says whether the held-out rows were rebuilt (and why not, if they were not).
+    ``training_rows`` is the number of training rows the set holds (CH3's support vectors when it was saved by
+    choice; 0 when none).
     """
 
     kind: NoticeKind
@@ -479,6 +571,7 @@ class BundleLoadResult:
     rebuilt: bool = False
     verification: str = ""
     rows_note: str = ""
+    training_rows: int = 0
 
 
 def loaded_info(run_id: str | None) -> BundleLoadResult | None:
@@ -577,6 +670,13 @@ def load_bundle_into_session(path: Path | str, progress: ProgressFn | None = Non
                         if result.status == persist.NOT_SAVED).strip()
     if left_out:
         rows_note += f" {left_out}"
+    inside = bundle.training_rows_inside
+    held = sum(inside.values())
+    held_note = ""
+    if held:
+        names = ", ".join(_channel_label(key) for key in inside)
+        held_note = (f" This set holds {held:,} training rows ({names} saved by choice: its support vectors, kept "
+                     "on this machine only).")
     report = bundle.verification
     if report.verified:
         kind: NoticeKind = "success"
@@ -584,8 +684,9 @@ def load_bundle_into_session(path: Path | str, progress: ProgressFn | None = Non
         kind = "warning"
     else:
         kind = "error"
-    message = f"Loaded run {run.run_id} from disk. {report.message} {rows_note}"
+    message = f"Loaded run {run.run_id} from disk. {report.message} {rows_note}{held_note}"
     result = BundleLoadResult(kind, message, run_id=run.run_id, path=str(folder), verified=report.verified,
-                              rebuilt=data is not None, verification=report.message, rows_note=rows_note)
+                              rebuilt=data is not None, verification=report.message, rows_note=rows_note,
+                              training_rows=held)
     st.session_state.setdefault(LOADED, {})[run.run_id] = result
     return result

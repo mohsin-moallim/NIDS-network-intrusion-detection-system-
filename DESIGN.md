@@ -188,8 +188,7 @@ Built concurrently by two implementers, integrated, reviewed through three lense
   38,562 test rows matched, and 03 Measure showed the same readings as before the restart (CH2 XGBoost 0.7439).
 - **CH3 (kernel SVM) is not written to saved sets.** A kernel SVM *is* a set of training rows (its support vectors,
   standardised), and the brief asks that no dataset rows be copied into the project. Its readings are kept in the manifest
-  and the Logbook says so plainly; refit it at 02 Fit when needed. *(Pending the owner's confirmation; an opt-in to save it
-  anyway would be easy to add.)*
+  and the Logbook says so plainly; refit it at 02 Fit when needed. *(Superseded on 2026-10-01 by the owner's decision below: CH3 can be saved by explicit opt-in.)*
 - **No dataset rows on disk** otherwise: probes are synthetic, quantiles are summary statistics, and the training reference
   sample used for explanations is never written.
 - **Run history** lives in SQLite (`run_history/runs.sqlite3`, git-ignored), recorded from the fit job itself so even a fit
@@ -254,8 +253,29 @@ Built by four implementers in parallel, integrated, reviewed through three lense
 - **One rule each** for printing scores (four decimals, never 1.0000 below 1), for the alert (attack verdict and attack
   probability at or above the threshold, compared in float32 at every station), and for what counts as normal traffic.
 - **Top-K ranking** is fitted through the same counted entry point as the channels, so the no-retrain test also covers it.
-- **Test-suite time.** The suite holds 589 tests; the default run (553) takes about 2.5 minutes on the test laptop, a
-  little over the 2-minute aim set in the build spec, kept rather than moving the main UI journeys out of the default
+- **Test-suite time.** The suite held 589 tests at this point; the default run (553) took about 2.5 minutes on the test
+  laptop on mains power, a little over the 2-minute aim set in the build spec, kept rather than moving the main UI journeys out of the default
   run; whole-file and benchmark tests run with `-m realdata` / `-m slow`.
-- **Still open for the owner:** whether CH3 should stay out of saved sets (current default) or gain an opt-in that stores
-  its support vectors in the git-ignored `saved_models/` folder.
+- **CH3 and saved sets** was left open for the owner at this point; decided below.
+
+## Owner decision — saving CH3 by opt-in (2026-10-01)
+- **Decision (owner, option B):** CH3, the kernel SVM, stays **out** of saved channel sets by default, but the Logbook
+  offers an explicit opt-in, **"Also save CH3 (RBF SVM)"**, unticked every time.
+- **Why:** reloading all five channels after a restart matters to the owner, and the brief's "don't copy the data into the
+  project" is still honoured by default. A kernel SVM *is* its support vectors (training rows after gap filling, signed
+  logarithm and standardisation, which the saved scaler turns back into the original values), so saving it necessarily
+  writes those rows. The opt-in makes that an informed, per-save choice instead of a hidden one.
+- **How it shows:** the checkbox caption states how many training rows CH3 would write and where (`saved_models\<run id>\`,
+  git-ignored, this machine only); the save notice repeats it; the manifest records `training_rows_inside`; the saved-sets
+  table has a "training rows inside" column; a loaded set that holds CH3 says so. Sets saved without CH3 (including
+  those saved before this change) load and verify exactly as before.
+- **Built and checked (phase 10):** `persist.save_run(..., include_svm=True)` writes `svm.joblib`, checksums it and gives
+  it probe readings; on load CH3 is verified like every channel and returns as an ordinary channel whose held-out
+  predictions match the original exactly (checked in fresh processes, binary and multi-class). The owner's set saved
+  earlier (without CH3) still loads and verifies unchanged.
+- **No silent leftovers.** Saving and deleting work through hidden temporary folders; if Windows blocks a step, the
+  delete puts the set back where possible (removing `svm.joblib` first), and any leftover folder — especially one still
+  holding CH3's rows — is named in the Logbook with a button to remove it (only after it has been untouched for 30 s,
+  so another session's save in progress is never offered).
+- **Loading a set that holds CH3** re-scores its held-out rows with per-block progress, and the opt-in caption says so.
+- **Test suite** now 603 tests (567 by default): about 2.5 minutes on mains power, about 4.5 on battery.

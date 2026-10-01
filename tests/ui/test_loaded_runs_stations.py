@@ -51,7 +51,7 @@ from ui.training_ui import channel_label
 pytestmark = pytest.mark.ui
 #: Rows of the generated file scored at 05 Assay.
 UPLOAD_ROWS = 120
-#: Every channel a saved set keeps (CH3 never is: its model is made of training rows).
+#: Every channel a saved set keeps by default (CH3 only when saved by choice: its model is made of training rows).
 SAVED_CHANNELS = ["forest", "xgboost", "mlp", "logreg"]
 
 

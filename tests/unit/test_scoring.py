@@ -504,7 +504,7 @@ def test_a_run_loaded_from_disk_without_its_rows_scores_the_same(prepared: Prepa
     run = runs["binary"]
     loaded = persist.restore_run(persist.load_bundle(persist.save_run(run, tmp_path / "saved")))
     assert loaded.origin == "loaded" and not loaded.has_test_rows
-    # The kernel SVM is never saved, so it is not offered; the other channels score as the fitted ones do.
+    # The kernel SVM is not saved by default, so it is not offered; the other channels score as the fitted ones do.
     assert scoring.channel_choices(loaded) == ["forest", "xgboost", "logreg", CONSENSUS]
     path = write_cic_csv(tmp_path / "flows.csv", _generated_rows(prepared, run, 50))
     fits = sum(train.FIT_CALLS.values())

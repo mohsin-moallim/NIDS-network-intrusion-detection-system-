@@ -97,7 +97,9 @@ this session with ✓, and lets you open any of them directly.
 ### Logbook and Bench
 ![Logbook: saved channel sets and run history](docs/screenshots/logbook.png)
 - **Logbook:** save the current fit as a channel set, load one back with verification, delete one; browse and
-  download the run history (one line per finished fit, kept in SQLite).
+  download the run history (one line per finished fit, kept in SQLite). CH3 is left out of a saved set unless you
+  tick *Also save CH3 (RBF SVM)*, unticked for every new fit; the table of saved sets shows how many training rows
+  each one holds (0, or CH3's support vectors).
 - **Bench:** the data folder (with a found/missing check of the eight files) and the defaults every station starts
   from. Light (paper) and dark (graphite) themes, or the system setting, are chosen under *Theme* in the ⋮ menu at
   the top right.
@@ -129,11 +131,14 @@ this session with ✓, and lets you open any of them directly.
 - **Verified reload.** A saved set records a SHA-256 for every file and refuses a changed one. On load each channel
   re-reads 512 saved probe flows and must reproduce its saved probabilities exactly; with other library versions
   the differences are listed and the set is marked *not verified*.
-- **No dataset rows on disk.** Saved sets hold the models, a manifest, *synthetic* probe flows and per-feature
-  quantiles. Held-out rows are rebuilt from the data folder on load and checked against digests. For the same reason
-  **CH3 is not saved**: a kernel SVM is made of its support vectors, which are training rows in scaled form, and the
-  scaler saved beside them would turn them straight back into dataset rows. Its readings stay in the manifest; refit
-  it at 02 Fit when needed.
+- **No dataset rows on disk unless you choose.** Saved sets hold the models, a manifest, *synthetic* probe flows and
+  per-feature quantiles. Held-out rows are rebuilt from the data folder on load and checked against digests. For the
+  same reason **CH3 is not saved by default**: a kernel SVM is made of its support vectors, which are training rows
+  in scaled form, and the scaler saved beside them turns them straight back into dataset rows. Its readings stay in
+  the manifest; refit it at 02 Fit when needed. Ticking *Also save CH3 (RBF SVM)* at the Logbook (off by default,
+  never remembered between fits) writes `svm.joblib` with those rows into `saved_models\<run id>\` on your machine
+  (git ignores the folder); the manifest declares how many it holds, and CH3 then loads back verified like the
+  other channels.
 - **Offline PDF.** Charts are drawn once with Altair, rendered to PNG by vl-convert and placed by fpdf2 with the
   bundled fonts. No browser and no network.
 - **Never colour alone.** Normal is "○ Normal", attacks "◆ Attack" or "◆ class name", alerts "▲ Alert"; channels
@@ -251,10 +256,12 @@ Please cite the dataset authors when you use it:
 8. **07 Record.** Press **Build PDF record** (about 7 s and 9 to 10 pages for a five-channel binary run, depending
    on which optional sections are present: Assay, Sweep, cross-validation), then *Download PDF record*; take the CSV
    files one by one or *Download all as ZIP* (the PDF, the CSV files and a `README.txt`).
-9. **Logbook.** Press **Save the current fit** to keep it under `saved_models\<run id>\`. Later, even after a restart,
-   pick the set and press **Load**: the files are checked, the channels re-read their probe flows, and the held-out
-   rows are rebuilt from the data folder, after which every station works as before (without the data folder the
-   stations say what they cannot show). *Delete* asks once more.
+9. **Logbook.** Press **Save the current fit** to keep it under `saved_models\<run id>\`. CH3 stays out unless you
+   first tick *Also save CH3 (RBF SVM)*, which also writes its support vectors (training rows) into that folder; the
+   notice says which you chose. Later, even after a restart, pick the set and press **Load**: the files are checked,
+   the channels re-read their probe flows, and the held-out rows are rebuilt from the data folder, after which every
+   station works as before (without the data folder the stations say what they cannot show). *Delete* asks once
+   more.
 
 ## Channels and metrics
 
@@ -298,9 +305,9 @@ throughput (flows per second) and single-flow latency (ms). The held-out class c
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-At the final check (2026-10-01) the suite held 589 tests. The default run takes the 553 not marked `slow` and lasts
-about two and a half minutes on the test laptop; `-m realdata` selects 35 tests, `-m slow` 36, and the markers `unit`,
-`integration` and `ui` 372, 115 and 85. Tests never touch your settings, saved sets or history (each works in its own
+At the final check (2026-10-01) the suite held 603 tests. The default run takes the 567 not marked `slow` and lasts
+about two and a half minutes on the test laptop on mains power (about four and a half on battery); `-m realdata`
+selects 35 tests, `-m slow` 36, and the markers `unit`, `integration` and `ui` 372, 125 and 89. Tests never touch your settings, saved sets or history (each works in its own
 temporary folder) and write no dataset rows anywhere. Real-data tests find the files through
 `"--data-dir=<folder>"` (write it as one quoted token with `=`; a separate path argument confuses pytest's search
 for its settings), else `NIDS_DATA_DIR`, else the Bench setting, and skip when there is no folder. The ten quick
@@ -308,7 +315,7 @@ ones (headers, labels and the file catalogue) run in the default suite; the heav
 
 | Command | What runs |
 |---|---|
-| `.\.venv\Scripts\python.exe -m pytest -q` | everything except tests marked `slow` (about 2.5 min) |
+| `.\.venv\Scripts\python.exe -m pytest -q` | everything except tests marked `slow` (about 2.5 min on mains power) |
 | `.\.venv\Scripts\python.exe -m pytest -q -m realdata` | every real-data test: whole files, label counts, full-size fits, stations on a real run, benchmarks (about 4.5 min) |
 | `.\.venv\Scripts\python.exe -m pytest -q -m slow -s` | the long tests: benchmarks, restarts, full PDF builds, heavy real-data runs (about 4 min; `-s` prints the benchmark tables) |
 | `.\.venv\Scripts\python.exe -m pytest -q -m ui` | headless Streamlit checks of every station (`-m unit` and `-m integration` select the same way) |
@@ -388,7 +395,9 @@ graticule/
   pass straight into the readings.
 - **Calibration only on CH3.** Other channels report their models' own probabilities, so an alert threshold is not a
   guaranteed error rate.
-- **The kernel SVM is capped and not saved.** CH3 sees at most 50,000 training rows and must be refitted after a load.
+- **The kernel SVM is capped and not saved by default.** CH3 sees at most 50,000 training rows and must be refitted
+  after a load, unless it was saved by choice, in which case its saved set holds those support vectors (training
+  rows) on disk.
 - **Saved models are pickles.** `.joblib` files run code when loaded; checksums catch damage, not deliberate forgery.
   Load only sets made on your machine or by someone you trust.
 - **Single machine, single user.** A Streamlit app with one fit (or measurement) at a time per process, meant for

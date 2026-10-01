@@ -42,7 +42,8 @@ the confusion matrices small enough to read in a screenshot.
 
 ## Keep out of the images
 
-- **Dataset rows.** The project never stores dataset rows, and its pictures should not either. At 04 Probe use
+- **Dataset rows.** The project stores no dataset rows by default (only CH3's support vectors, when you choose to
+  save CH3 with a channel set), and its pictures should hold none either. At 04 Probe use
   *A typical flow* (per-feature medians of one class, not a recorded flow) and keep the "All … feature values" panel
   closed; at 05 Assay capture the readings and scroll the "First … scored rows" table out of view.
 - **Personal paths.** The Bench, 01 Sample and the Logbook print folder paths. Use a neutral data folder such as

@@ -91,8 +91,8 @@ from graticule.schema import DESTINATION_PORT, FEATURES, LABEL
 
 Mode = Literal["binary", "multiclass"]
 ConflictPolicy = Literal["keep", "majority", "drop"]
-#: ``"not_saved"`` marks a channel of a run loaded from disk that was fitted but is never kept in saved sets
-#: (see :data:`graticule.persist.UNSAVED_CHANNELS`).
+#: ``"not_saved"`` marks a channel of a run loaded from disk that was fitted but left out of its saved set (CH3,
+#: unless it was saved by choice; see :data:`graticule.persist.UNSAVED_CHANNELS`).
 ChannelStatus = Literal["ok", "failed", "cancelled", "skipped", "not_saved"]
 RunOrigin = Literal["fitted", "loaded"]
 

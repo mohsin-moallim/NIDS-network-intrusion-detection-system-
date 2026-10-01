@@ -1,14 +1,19 @@
-"""Headless checks of the Logbook: save the current fit (CH3 stays out), list it, load it back verified, delete it,
-the confirmation before a load replaces an unsaved fit, robustness against damaged folders, and the history."""
+"""Headless checks of the Logbook: save the current fit (CH3 stays out by default), list it, load it back verified,
+delete it; the "Also save CH3" opt-in (unticked for every new run, then saved, counted and loaded back as an
+ordinary channel); the confirmation before a load replaces an unsaved fit, robustness against damaged folders, and
+the history."""
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -26,10 +31,12 @@ from ui import state
 from ui.pages import logbook
 
 pytestmark = pytest.mark.ui
-#: CH3 is fitted but never saved (its model is made of training rows), so a full fit loads back with four.
+#: CH3 is fitted but not saved by default (its model is made of training rows), so a full fit loads back with four.
 KEPT = [k for k in MODEL_KEYS if k != "svm"]
 VERIFIED = "Verified: all 4 channels reproduced their saved probe readings exactly."
 QUICK = ["forest", "logreg"]
+#: A quick fit that includes CH3, for the "Also save CH3" opt-in.
+WITH_SVM = ["forest", "svm", "logreg"]
 
 
 def _text(at: AppTest) -> str:
@@ -73,6 +80,16 @@ def quick_fit() -> tuple[PreparedDataset, TrainingRun]:
     return prepared, run
 
 
+@pytest.fixture(scope="module")
+def svm_fit() -> tuple[PreparedDataset, TrainingRun]:
+    """A small synthetic sample and a quick fit that includes CH3 (made once for the opt-in test)."""
+    prepared = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=2_000, row_budget=1_600, seed=42))
+    request = TrainRequest(profile="test", channels=tuple(WITH_SVM))
+    run = train_all(build_training_data(prepared, request), request, data_request=prepared.request,
+                    dataset_fingerprint=prepared.fingerprint)
+    return prepared, run
+
+
 def _quick_app(quick_fit: tuple[PreparedDataset, TrainingRun]) -> tuple[AppTest, str]:
     """A Logbook session whose 01 Sample and current run are those of ``quick_fit``, as right after a fit at 02 Fit
     (the run is a fresh copy, recorded in the history, not saved)."""
@@ -106,23 +123,29 @@ def test_save_list_load_delete_and_clear(fresh_caches: None) -> None:
     assert history["Run"].tolist() == [run_id]
     assert history["Channels"].tolist() == ["CH1 CH2 CH3 CH4 CH5"]
     assert "fitted in this session" in _text(at)
-    # Saving says plainly what is written, and that CH3 stays out.
-    assert "No dataset rows are written, so CH3" in _text(at) and "support vectors" in _text(at)
+    # Saving says plainly what is written, and that CH3 stays out unless chosen (the box is there, unticked).
+    assert "No dataset rows are written unless you save CH3" in _text(at) and "support vectors" in _text(at)
+    box = at.checkbox(key=logbook.save_svm_key(at.session_state[state.RUN]))
+    assert box.label == "Also save CH3 (RBF SVM)" and box.value is False
 
-    # Save the current fit: everything but CH3.
+    # Save the current fit with the box left unticked: everything but CH3.
     at.button(key="lb_save").click().run()
     assert not errors(at), errors(at)
     folder = settings_mod.MODELS_DIR / run_id
     assert (folder / "manifest.json").is_file() and not (folder / "svm.joblib").exists()
     saved_message = " ".join(s.value for s in at.success)
     assert saved_message.startswith(f"Saved run {run_id} to {folder}.")
-    assert "CH3 RBF SVM is not kept in saved sets" in saved_message
-    assert "lb_save" not in [b.key for b in at.button]
+    # CH3 is still fitted on the bench: the notice and the caption say so and how to include it, not "fit it again".
+    assert "CH3 RBF SVM was left out of the saved set, as by default" in saved_message
+    assert ("It stays fitted on the bench for this session; to include it in the set, delete the set at the Logbook "
+            "and save again with \"Also save CH3 (RBF SVM)\" ticked.") in saved_message
+    assert "Fit it again" not in saved_message and "Fit it again" not in _text(at)
+    assert "lb_save" not in [b.key for b in at.button] and box.key not in [c.key for c in at.checkbox]
     assert str(folder) in _text(at)
     assert _table(at, "Train rows")["Saved to"].tolist() == [str(folder)]
     saved = _table(at, "Folder")
     assert saved["Run"].tolist() == [run_id] and saved["Channels"].tolist() == ["CH1 CH2 CH4 CH5"]
-    assert saved["Check"].tolist() == ["manifest intact"]
+    assert saved["Check"].tolist() == ["manifest intact"] and saved["Training rows inside"].tolist() == [0]
 
     # Load it back: verified, held-out rows rebuilt from the session's own sample, nothing fitted, marked loaded.
     before = _fit_calls()
@@ -175,6 +198,83 @@ def test_save_list_load_delete_and_clear(fresh_caches: None) -> None:
     assert "No fits recorded yet." in _text(at)
 
 
+def test_ch3_is_saved_only_when_ticked_and_loads_back_as_an_ordinary_channel(
+        fresh_caches: None, svm_fit: tuple[PreparedDataset, TrainingRun]) -> None:
+    at, run_id = _quick_app(svm_fit)
+    run = at.session_state[state.RUN]
+    vectors = run.channels["svm"].extra["support_vectors"]
+    assert vectors > 0
+    fits = _fit_calls()
+
+    # The opt-in: drawn unticked, with a plain account of what ticking it writes, and where.
+    box = at.checkbox(key=logbook.save_svm_key(run))
+    assert box.label == "Also save CH3 (RBF SVM)" and box.value is False
+    captions = " ".join(c.value for c in at.caption)
+    assert f"CH3's model is its {vectors:,} support vectors, which are training rows after gap filling" in captions
+    assert "its saved scaler turns them back into the original values" in captions
+    assert f"saved_models\\{run_id}\\ on this machine (git ignores the folder)" in captions
+    assert "Leave it unticked to keep dataset rows out of the project, as by default" in captions
+
+    # Ticked and saved: CH3 is written, and the notice says how many training rows the set now holds.
+    box.check().run()
+    assert at.checkbox(key=logbook.save_svm_key(run)).value is True
+    at.button(key="lb_save").click().run()
+    assert not errors(at), errors(at)
+    folder = settings_mod.MODELS_DIR / run_id
+    assert (folder / "svm.joblib").is_file()
+    message = " ".join(s.value for s in at.success)
+    assert message.startswith(f"Saved run {run_id} to {folder}.")
+    assert f"CH3 (RBF SVM) was saved with it, by choice: the set holds {vectors:,} training rows" in message
+    assert "is not kept in saved sets" not in message
+    assert f"This set holds {vectors:,} training rows (CH3)" in _text(at)
+    assert state.unsaved_channel_note(run) == ""
+    saved = _table(at, "Folder")
+    assert saved["Channels"].tolist() == ["CH1 CH3 CH5"] and saved["Training rows inside"].tolist() == [vectors]
+
+    # Loaded back: CH3 is verified and restored like the other channels, nothing is fitted, and the set's rows
+    # are named.
+    at.button(key="lb_load").click().run()
+    assert not errors(at), errors(at)
+    message = " ".join(s.value for s in at.success)
+    assert f"Loaded run {run_id} from disk." in message
+    assert "Verified: all 3 channels reproduced their saved probe readings exactly." in message
+    assert f"This set holds {vectors:,} training rows" in message and "is not kept in saved sets" not in message
+    loaded = at.session_state[state.RUN]
+    assert loaded.origin == "loaded" and loaded.has_test_rows and loaded.ok_channels() == WITH_SVM
+    assert loaded.channels["svm"].status == "ok"
+    assert np.array_equal(loaded.channels["svm"].y_pred, run.channels["svm"].y_pred)
+    assert np.array_equal(loaded.channels["svm"].proba, run.channels["svm"].proba)
+    text = _text(at)
+    assert f"holds {vectors:,} training rows (CH3)" in text and "3 channels: CH1 CH3 CH5" in text
+    assert state.unsaved_channel_note(loaded) == "" and state.saved_training_rows(loaded) == vectors
+    assert _fit_calls() == fits
+    goto(at, "fit")  # 02 Fit lists the loaded CH3 as fitted, not as "not saved"
+    assert not errors(at), errors(at)
+    assert _table(at, "Balanced accuracy").set_index("Channel").loc["CH3 RBF SVM", "Status"] == "fitted"
+    assert _fit_calls() == fits
+
+    # The set is deleted while its run is on the bench: the panel no longer says the rows stay on disk.
+    goto(at, "logbook")
+    at.button(key="lb_delete").click().run()
+    at.button(key="lb_delete_yes").click().run()
+    assert not errors(at), errors(at)
+    assert not folder.exists() and state.saved_training_rows(at.session_state[state.RUN]) == 0
+    text = _text(at)
+    assert "(that folder has since been deleted)" in text and "No saved channel sets yet." in text
+    assert f"The set this run was loaded from held CH3's {vectors:,} training rows (its support vectors)" in text
+    assert f"holds {vectors:,} training rows (CH3)" not in text and "They stay in this machine's" not in text
+    assert at.session_state[state.RUN].channels["svm"].ok
+
+    # The choice is never carried over: the next fit on the bench gets its own box, unticked.
+    following = replace(run, run_id=f"{run_id}-next", bundle_path=None)
+    state.run_registry().put(following.run_id, following)
+    at.session_state[state.RUN] = following
+    at.session_state[state.LAST_RUN_ID] = following.run_id
+    goto(at, "logbook")
+    assert not errors(at), errors(at)
+    assert at.checkbox(key=logbook.save_svm_key(following)).value is False
+
+
 def test_loading_over_an_unsaved_fit_asks_first(fresh_caches: None,
                                                 quick_fit: tuple[PreparedDataset, TrainingRun]) -> None:
     at, run_id = _quick_app(quick_fit)
@@ -217,6 +317,109 @@ def test_loading_over_an_unsaved_fit_asks_first(fresh_caches: None,
     message = " ".join(s.value for s in at.success)
     assert f"(fingerprint {drawn[:12]}) was replaced" in message
     assert at.session_state[state.PREPARED].fingerprint == fitted.dataset_fingerprint
+
+
+def test_save_then_load_follows_the_ch3_box(fresh_caches: None,
+                                            svm_fit: tuple[PreparedDataset, TrainingRun]) -> None:
+    """"Save <run>, then load" saves the fit on the bench as the "Also save CH3" box says, and says so first."""
+    at, run_id = _quick_app(svm_fit)
+    fitted = at.session_state[state.RUN]
+    vectors = fitted.channels["svm"].extra["support_vectors"]
+    copy_id = f"{run_id}-copy"
+    persist.save_run(replace(fitted, run_id=copy_id, bundle_path=None))  # another set of the same sample, no CH3
+    goto(at, "logbook")
+    at.selectbox(key="lb_pick").set_value(copy_id).run()
+    fits = _fit_calls()
+
+    # Unticked: the confirmation says the save would leave CH3 out.
+    at.button(key="lb_load").click().run()
+    assert not errors(at), errors(at)
+    assert "Saving first leaves CH3 (RBF SVM) out, as by default" in _text(at)
+    at.button(key="lb_load_no").click().run()
+
+    # Ticked: the confirmation says CH3 is included, and the save writes it before the other set is loaded.
+    at.checkbox(key=logbook.save_svm_key(fitted)).check().run()
+    at.button(key="lb_load").click().run()
+    assert not errors(at), errors(at)
+    assert "Saving first includes CH3 (RBF SVM) and its training rows, as ticked above." in _text(at)
+    at.button(key="lb_load_save").click().run()
+    assert not errors(at), errors(at)
+    folder = settings_mod.MODELS_DIR / run_id
+    assert (folder / "svm.joblib").is_file()
+    assert persist.read_bundle_summary(folder).holds_training_rows == vectors
+    message = " ".join(s.value for s in at.success)
+    assert message.startswith(f"Saved run {run_id}")
+    assert f"CH3 (RBF SVM) was saved with it, by choice: the set holds {vectors:,} training rows" in message
+    assert f"Loaded run {copy_id} from disk." in message
+    loaded = at.session_state[state.RUN]
+    assert loaded.run_id == copy_id and loaded.channels["svm"].status == persist.NOT_SAVED
+    table = _table(at, "Folder").set_index("Run")
+    assert table.loc[run_id, "Training rows inside"] == vectors and table.loc[copy_id, "Training rows inside"] == 0
+    assert _fit_calls() == fits
+
+
+def test_a_ch3_only_fit_points_to_the_box_and_is_saved_with_it(fresh_caches: None,
+                                                               svm_fit: tuple[PreparedDataset, TrainingRun]) -> None:
+    prepared, fitted = svm_fit
+    only = {k: (r if k == "svm" else replace(r, status="failed", estimator=None)) for k, r in fitted.channels.items()}
+    at, run_id = _quick_app((prepared, replace(fitted, run_id=f"{fitted.run_id}-svm", channels=only)))
+    vectors = fitted.channels["svm"].extra["support_vectors"]
+    assert "CH3 is the only fitted channel, so without the box there is nothing to save." in _text(at)
+
+    # Unticked: nothing is saved, and the refusal names the box (CH3 is fitted; fitting it again would not help).
+    at.button(key="lb_save").click().run()
+    assert not errors(at), errors(at)
+    refusal = " ".join(e.value for e in at.error)
+    assert refusal.startswith(f"Run {run_id} was not saved: its only fitted channel is CH3 (RBF SVM)")
+    assert f"Tick the box to save CH3 with its {vectors:,} training rows" in refusal and "Fit it again" not in refusal
+    assert not (settings_mod.MODELS_DIR / run_id).exists()
+
+    # "Save, then load" says so before anything is pressed.
+    persist.save_run(replace(fitted, run_id=f"{run_id}-copy", bundle_path=None))
+    at.run()
+    at.selectbox(key="lb_pick").set_value(f"{run_id}-copy").run()
+    at.button(key="lb_load").click().run()
+    assert "Saving first would save nothing: CH3 (RBF SVM) is the only fitted channel" in _text(at)
+    at.button(key="lb_load_no").click().run()
+
+    # Ticked: saved, with the rows counted.
+    at.checkbox(key=logbook.save_svm_key(at.session_state[state.RUN])).check().run()
+    at.button(key="lb_save").click().run()
+    assert not errors(at), errors(at)
+    assert (settings_mod.MODELS_DIR / run_id / "svm.joblib").is_file()
+    assert f"the set holds {vectors:,} training rows" in " ".join(s.value for s in at.success)
+
+
+def test_a_fit_without_ch3_writes_no_rows_and_leftover_folders_are_named(
+        fresh_caches: None, quick_fit: tuple[PreparedDataset, TrainingRun]) -> None:
+    at, _ = _quick_app(quick_fit)
+    text = _text(at)
+    assert ("No dataset rows are written: CH3, the one channel whose model is made of training rows (and which is "
+            "saved only by choice), has no fitted model in this run.") in text
+    assert "unless you save CH3" not in text and len(at.checkbox) == 0
+
+    # Work folders a save or a delete left behind: an old one is named (with CH3's rows), a fresh one is not (a save
+    # in another session may still be writing it). The files are placeholders, not models.
+    models = settings_mod.MODELS_DIR
+    old = models / ".deleting-20260101-000000-abcd-120000000000"
+    fresh = models / ".saving-20260101-000000-abcd-x1y2"
+    for folder in (old, fresh):
+        folder.mkdir(parents=True)
+        for name in ("svm.joblib", "manifest.json"):
+            (folder / name).write_bytes(b"placeholder")
+    hour_ago = time.time() - 3_600
+    for path in (old / "svm.joblib", old / "manifest.json", old):
+        os.utime(path, (hour_ago, hour_ago))
+    at.run()
+    assert not errors(at), errors(at)
+    warning = " ".join(w.value for w in at.warning)
+    assert f"{old.name} (unfinished delete, 2 files, svm.joblib: CH3's training rows)" in warning
+    assert "1 of them still holds CH3's training rows" in warning and fresh.name not in warning
+    at.button(key="lb_leftovers").click().run()
+    assert not errors(at), errors(at)
+    assert not old.exists() and fresh.is_dir()
+    assert "Removed 1 leftover folder." in [s.value for s in at.success]
+    assert "lb_leftovers" not in [b.key for b in at.button]
 
 
 def test_a_damaged_bundle_is_refused_and_changes_nothing(fresh_caches: None,

@@ -59,8 +59,11 @@ the 01 Sample sheet:
 - negative values such as the `-1` "not seen" markers in `Init_Win_bytes_forward` are kept and handled by a signed
   logarithm in the channels that need scaling.
 
-Nothing derived from the files is written back to disk: saved channel sets hold models, summary statistics and
-synthetic probe flows, never dataset rows.
+Nothing derived from the files is written back to disk by default: saved channel sets hold models, summary
+statistics and synthetic probe flows, and no dataset rows unless you choose to save CH3 (tick *Also save CH3 (RBF
+SVM)* at the Logbook). CH3's model is its support vectors, which are training rows in scaled form, so that choice
+writes them into `saved_models\<run id>\svm.joblib` on this machine (git ignores the folder), and the set's
+manifest declares how many it holds.
 
 ## Tests
 

@@ -121,8 +121,8 @@ def _streams_run(session: Any, run: TrainingRun | None) -> bool:
     """True when ``session`` streams ``run`` itself.
 
     The run object is compared, not only its id: a fit and its copy loaded from disk share one run id, but the
-    loaded copy may lack held-out rows or a channel (CH3 is never saved), so a stream of the fit must not carry
-    over to it. A stored session without a ``run`` attribute falls back to the id.
+    loaded copy may lack held-out rows or a channel (CH3 is not saved unless chosen), so a stream of the fit must
+    not carry over to it. A stored session without a ``run`` attribute falls back to the id.
     """
     if session is None or run is None:
         return False

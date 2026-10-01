@@ -9,7 +9,8 @@ A bundle is one folder, ``saved_models/<run id>/``:
     every channel's status, notes, timings and metrics, the SHA-256 of every other file, a summary of the probe
     set, and (``manifest_sha256``) the SHA-256 of the manifest's own content.
 ``<key>.joblib``
-    The fitted scikit-learn pipeline of channel ``<key>`` (forest, mlp, logreg), as joblib writes it.
+    The fitted scikit-learn pipeline of channel ``<key>`` (forest, mlp, logreg, and svm when CH3 is saved by
+    choice), as joblib writes it.
 ``xgboost.ubj`` and ``xgboost.joblib``
     The XGBoost model in XGBoost's own binary format, and the rest of its pipeline (the sanitiser) together with
     the model's constructor parameters, which XGBoost's format does not keep. They are put together again on load.
@@ -22,12 +23,19 @@ A bundle is one folder, ``saved_models/<run id>/``:
 ``quantiles.npz``
     The training quantiles of every feature (0 %, 1 %, ..., 100 %): summary statistics only.
 
-What a bundle never holds: dataset rows. The run's reference sample (training rows kept for explanations) is not
-written; a loaded run draws its background from the quantiles instead, or from the rebuilt training rows. For the
-same reason CH3 is never written (:data:`UNSAVED_CHANNELS`): a kernel SVM is a weighted set of its training rows
-(its support vectors), stored after gap filling, signed logarithm and standardisation, which the scaler saved with
-it undoes exactly. The manifest keeps CH3's readings, timings and support-vector count under status
-``"not_saved"``, and a loaded run lists the channel as not saved; fit it again at 02 Fit when it is needed.
+Dataset rows stay out of a bundle by default. The run's reference sample (training rows kept for explanations) is
+never written; a loaded run draws its background from the quantiles instead, or from the rebuilt training rows.
+For the same reason CH3 is left out by default (:data:`UNSAVED_CHANNELS`): a kernel SVM is a weighted
+set of its training rows (its support vectors), stored after gap filling, signed logarithm and standardisation,
+which the scaler saved with it undoes exactly. The manifest then keeps CH3's readings, timings and support-vector
+count under status ``"not_saved"``, and a loaded run lists the channel as not saved; fit it again at 02 Fit when it
+is needed.
+
+Saving CH3 is an explicit opt-in (``save_run(..., include_svm=True)``, the "Also save CH3" box at the Logbook): then
+``svm.joblib`` is written, checksummed, probe-checked and loaded like every other channel, and the manifest declares
+the training rows it holds under :data:`TRAINING_ROWS_KEY` (``{"svm": <support vectors>}``) and says so in its
+``contents`` text. A manifest without that key (every bundle saved before the opt-in existed), or with it empty
+(every bundle saved without CH3), declares no training rows. The bundle format is the same either way.
 
 Loading (:func:`load_bundle`) first checks the manifest against its own recorded SHA-256, then every other file
 against the SHA-256 the manifest records for it, and refuses the bundle when anything is missing or differs
@@ -40,6 +48,13 @@ verified"; with the same versions any difference is a failure.
 Trust: ``.joblib`` files are pickles, and reading a pickle runs code. The checksums catch damaged files and casual
 edits, not a deliberate forgery (whoever can edit a model file can recompute every checksum too), so only load
 bundles made on this machine or by someone you trust.
+
+A save works in a hidden ``.saving-*`` folder that is renamed into place at the end, and a delete first renames
+the bundle to a hidden ``.deleting-*`` folder and then removes it (any model made of training rows first, the
+manifest last). When a file stays held by another program past the retries, such a folder can stay behind: a
+failed delete puts the bundle back under its own name when it can, and :func:`find_leftovers` lists whatever is
+left (saying when ``svm.joblib``, CH3's training rows, is among it) so the Logbook can show it and
+:func:`remove_leftover` can remove it.
 
 Held-out rows are never stored either. :func:`rebuild_training_data` re-runs the recorded 01 Sample and 02 Fit
 requests on the data folder (or the generator, for synthetic runs) and checks that the very same rows, with the very
@@ -97,19 +112,34 @@ from graticule.settings import replace_with_retry
 from graticule.theme import CHANNEL_BY_KEY
 
 #: Version of the bundle layout written by :func:`save_run`; :func:`load_bundle` reads only this version. Format 2
-#: added the manifest's own checksum and the digests of the feature values, and leaves CH3 out.
+#: added the manifest's own checksum and the digests of the feature values, and leaves CH3 out unless it is saved
+#: by choice (the optional :data:`TRAINING_ROWS_KEY` came later within the same format).
 BUNDLE_FORMAT = 2
 MANIFEST_FILE = "manifest.json"
 #: Manifest key holding the SHA-256 of the rest of the manifest (see :func:`manifest_digest`).
 MANIFEST_DIGEST_KEY = "manifest_sha256"
-#: Status of a channel that was fitted but is never written to a bundle.
+#: Optional manifest key: channel key -> training rows its saved model holds (``{"svm": n}`` when CH3 was saved by
+#: choice, empty otherwise). Absent in older manifests, which means none.
+TRAINING_ROWS_KEY = "training_rows_inside"
+#: Status of a fitted channel that was not written to its bundle.
 NOT_SAVED = "not_saved"
-#: Channels never written to a bundle, and why (their model is made of dataset rows).
+#: Channels left out of a bundle unless saved by choice, and why (their model is made of dataset rows).
 UNSAVED_CHANNELS: dict[str, str] = {
+    "svm": ("CH3 RBF SVM is not kept in saved sets unless you choose to save it: a kernel SVM is made of its "
+            "training rows (its support vectors, standardised), and by default saved sets hold no dataset rows. "
+            "Fit it again at 02 Fit when you need it."),
+}
+#: Earlier wordings of :data:`UNSAVED_CHANNELS` found in the notes of bundles already on disk (replaced on restore).
+_FORMER_UNSAVED_NOTES: dict[str, tuple[str, ...]] = {
     "svm": ("CH3 RBF SVM is not kept in saved sets: a kernel SVM is made of its training rows (its support "
             "vectors, standardised), and saved sets never hold dataset rows. Fit it again at 02 Fit when you need "
-            "it."),
+            "it.",),
 }
+#: Model files made of training rows (CH3 saved by choice): a delete removes them first.
+_ROW_FILES = frozenset(f"{key}.joblib" for key in UNSAVED_CHANNELS)
+#: Name prefixes of the hidden work folders of a save and of a delete (gone when either finishes).
+SAVING_PREFIX = ".saving-"
+DELETING_PREFIX = ".deleting-"
 PROBE_FILE = "probe.npz"
 QUANTILE_FILE = "quantiles.npz"
 XGB_BOOSTER_FILE = "xgboost.ubj"
@@ -140,6 +170,10 @@ class BundleReadError(RuntimeError):
     """A bundle's files are intact but could not be read (for example with a much newer or older library)."""
 
 
+class BundleDeleteError(OSError):
+    """A delete stopped halfway because a file stayed held; the message says where what is left now lies."""
+
+
 class RebuildError(RuntimeError):
     """The held-out rows of a saved run could not be rebuilt identically (data folder, files or fingerprints)."""
 
@@ -149,7 +183,8 @@ class BundleSummary:
     """One saved bundle as listed in the Logbook (read from its manifest only; no model is loaded).
 
     ``problem`` says why :func:`load_bundle` would refuse the bundle when that shows from the manifest alone (an
-    older layout, or a manifest changed since it was saved); None otherwise.
+    older layout, or a manifest changed since it was saved); None otherwise. ``holds_training_rows`` is the number of
+    training rows the bundle's models hold (CH3's support vectors when it was saved by choice; 0 when none).
     """
 
     path: Path
@@ -162,6 +197,23 @@ class BundleSummary:
     best_channel: str | None
     best_balanced_accuracy: float | None
     problem: str | None = None
+    holds_training_rows: int = 0
+
+
+@dataclass(frozen=True)
+class LeftoverFolder:
+    """A hidden work folder that a save or a delete left in the models folder (see :func:`find_leftovers`).
+
+    ``kind`` is ``"save"`` (a ``.saving-*`` folder) or ``"delete"`` (a ``.deleting-*`` folder); ``files`` are the
+    names still in it; ``holds_training_rows`` is True when one of them is a model made of training rows
+    (``svm.joblib``, CH3 saved by choice); ``age_seconds`` is the time since the folder or a file in it last changed.
+    """
+
+    path: Path
+    kind: str
+    files: tuple[str, ...]
+    holds_training_rows: bool
+    age_seconds: float
 
 
 @dataclass
@@ -209,6 +261,11 @@ class LoadedBundle:
         """Data source of the saved run: ``"cicids"`` or ``"synthetic"``."""
         return str((self.manifest.get("data_request") or {}).get("source", "cicids"))
 
+    @property
+    def training_rows_inside(self) -> dict[str, int]:
+        """Training rows held per saved channel (``{"svm": n}`` when CH3 was saved by choice; empty otherwise)."""
+        return training_rows_inside(self.manifest)
+
 
 # --------------------------------------------------------------------------------------------------------------
 # Small helpers
@@ -253,6 +310,59 @@ def _plain(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return str(value)
+
+
+def training_rows_inside(manifest: Mapping[str, Any]) -> dict[str, int]:
+    """Training rows the models of a bundle hold, per channel, as its manifest declares them.
+
+    Reads :data:`TRAINING_ROWS_KEY` (``{"svm": <support vectors>}`` when CH3 was saved by choice). The key is
+    optional: a manifest without it, or with an empty or malformed value, declares none, except that a channel of
+    :data:`UNSAVED_CHANNELS` saved with status ``"ok"`` counts its recorded support vectors all the same, so a
+    bundle holding CH3 is never listed as holding no rows. Channels holding none are left out.
+    """
+    declared = manifest.get(TRAINING_ROWS_KEY)
+    out: dict[str, int] = {}
+    if isinstance(declared, Mapping):
+        for key, value in declared.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0:
+                out[str(key)] = int(value)
+    entries = manifest.get("channels")
+    if isinstance(entries, Mapping):
+        for key in UNSAVED_CHANNELS:
+            entry = entries.get(key)
+            if key in out or not isinstance(entry, Mapping) or entry.get("status") != "ok":
+                continue
+            extra = entry.get("extra")
+            vectors = extra.get("support_vectors") if isinstance(extra, Mapping) else None
+            if isinstance(vectors, (int, float)) and not isinstance(vectors, bool) and vectors > 0:
+                out[key] = int(vectors)
+    return out
+
+
+def support_vector_count(estimator: Any) -> int:
+    """Number of support vectors (training rows) stored inside a fitted CH3 model, 0 when it holds none.
+
+    Looks through the calibration wrapper, the frozen estimator and the pipeline to the kernel SVM itself.
+    """
+    stack: list[Any] = [estimator]
+    seen: set[int] = set()
+    while stack:
+        obj = stack.pop()
+        if obj is None or id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        vectors = getattr(obj, "support_vectors_", None)
+        if isinstance(vectors, np.ndarray) and vectors.ndim == 2:
+            return int(vectors.shape[0])
+        if isinstance(obj, Pipeline):
+            stack.extend(step for _, step in obj.steps)
+        for name in ("estimator", "calibrated_classifiers_"):
+            inner = getattr(obj, name, None)
+            if isinstance(inner, (list, tuple)):
+                stack.extend(inner)
+            elif inner is not None and not isinstance(inner, (str, int, float)):
+                stack.append(inner)
+    return 0
 
 
 def _floats(values: Mapping[str, Any] | None) -> dict[str, float]:
@@ -550,9 +660,11 @@ def _richer_metrics(run: TrainingRun) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _kept_channels(run: TrainingRun) -> list[str]:
-    """The fitted channels of ``run`` that a bundle keeps (every fitted one except :data:`UNSAVED_CHANNELS`)."""
-    return [key for key in run.ok_channels() if key not in UNSAVED_CHANNELS]
+def _kept_channels(run: TrainingRun, include_svm: bool = False) -> list[str]:
+    """The fitted channels of ``run`` that its bundle keeps: every fitted one except :data:`UNSAVED_CHANNELS`, and
+    CH3 too when ``include_svm`` (saved by choice)."""
+    chosen = {"svm"} if include_svm else set()
+    return [key for key in run.ok_channels() if key not in UNSAVED_CHANNELS or key in chosen]
 
 
 def _best_kept(run: TrainingRun, kept: list[str]) -> tuple[str | None, float | None]:
@@ -566,10 +678,11 @@ def _best_kept(run: TrainingRun, kept: list[str]) -> tuple[str | None, float | N
     return best
 
 
-def _channel_entry(result: ChannelResult, files: list[str], richer: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The manifest entry of one channel (a fitted channel that bundles never keep gets status ``"not_saved"``)."""
+def _channel_entry(result: ChannelResult, files: list[str], richer: Mapping[str, Any] | None,
+                   kept: bool = True) -> dict[str, Any]:
+    """The manifest entry of one channel (a fitted channel the bundle does not keep gets status ``"not_saved"``)."""
     extra = dict(result.extra or {})
-    unsaved = result.ok and result.key in UNSAVED_CHANNELS
+    unsaved = result.ok and result.key in UNSAVED_CHANNELS and not kept
     notes = [str(n) for n in result.notes]
     if unsaved:
         notes.append(UNSAVED_CHANNELS[result.key])
@@ -593,9 +706,26 @@ def _channel_entry(result: ChannelResult, files: list[str], richer: Mapping[str,
     return entry
 
 
+def _contents_text(channel_files: Mapping[str, list[str]], training_rows: Mapping[str, int]) -> str:
+    """The manifest's plain-words account of what the bundle holds, dataset rows above all."""
+    base = "Models, metadata, synthetic probe vectors and per-feature quantiles"
+    if not training_rows:
+        return (f"{base}; no dataset rows. CH3 (the kernel SVM) is not kept, because its model is made of training "
+                "rows (its support vectors); it is saved only when you choose to.")
+    held = []
+    for key, count in training_rows.items():
+        name = ", ".join(channel_files.get(key, [])) or f"{key}.joblib"
+        held.append(f"{name} ({_channel_label(key)}, saved by choice) holds {int(count):,} training rows: its "
+                    "support vectors, stored after gap filling, signed logarithm and standardisation, which the "
+                    "scaler saved with it turns back into the original values")
+    return f"{base}. " + "; ".join(held) + ". No other file holds dataset rows."
+
+
 def _build_manifest(run: TrainingRun, channel_files: Mapping[str, list[str]], files: Mapping[str, str],
-                    probe_seed: int) -> dict[str, Any]:
-    """Everything recorded about ``run`` in its bundle (plain values)."""
+                    probe_seed: int, training_rows: Mapping[str, int] | None = None) -> dict[str, Any]:
+    """Everything recorded about ``run`` in its bundle (plain values); ``training_rows`` declares the training rows
+    a saved model holds (CH3's support vectors when it is saved by choice)."""
+    training_rows = {str(k): int(v) for k, v in (training_rows or {}).items()}
     data = run.data
     reports = data.reports or {}
     richer = _richer_metrics(run)
@@ -641,8 +771,10 @@ def _build_manifest(run: TrainingRun, channel_files: Mapping[str, list[str]], fi
         "seconds": float(run.seconds),
         "prep_seconds": float(run.prep_seconds),
         "reports": reports,
-        "channels": {key: _channel_entry(run.channels[key], list(channel_files.get(key, [])), richer.get(key))
+        "channels": {key: _channel_entry(run.channels[key], list(channel_files.get(key, [])), richer.get(key),
+                                         kept=key in channel_files)
                      for key in _ordered(run.channels)},
+        TRAINING_ROWS_KEY: training_rows,
         "best_channel": best_key,
         "best_balanced_accuracy": best_value,
         "library_versions": library_versions(),
@@ -657,28 +789,29 @@ def _build_manifest(run: TrainingRun, channel_files: Mapping[str, list[str]], fi
             "check": "labels and float64 probabilities must be identical (forests scored on one thread)",
         },
         "quantiles": {"file": QUANTILE_FILE, "levels": len(QUANTILE_LEVELS), "features": len(data.feature_names)},
-        "contents": "Models, metadata, synthetic probe vectors and per-feature quantiles; no dataset rows. CH3 (the "
-                    "kernel SVM) is not kept, because its model is made of training rows (its support vectors).",
+        "contents": _contents_text(channel_files, training_rows),
     })
 
 
-def save_run(run: TrainingRun, directory: Path | None = None) -> Path:
+def save_run(run: TrainingRun, directory: Path | None = None, *, include_svm: bool = False) -> Path:
     """Save the fitted channels of ``run`` as a bundle and return its folder (``<directory>/<run id>``).
 
     ``directory`` defaults to ``settings.MODELS_DIR``. Every file is written into a hidden temporary folder next
     to the target and the folder is renamed into place at the end, so a bundle is either complete or absent.
-    Saving a run that is already saved there returns the existing folder. Only channels with status ``"ok"`` are
-    written, apart from those in :data:`UNSAVED_CHANNELS` (CH3), which the manifest records as ``"not_saved"``.
-    Sets ``run.bundle_path``. Raises ``ValueError`` when no channel that bundles keep was fitted, or when the run
-    has no held-out rows in memory (a loaded run without its data cannot be saved again).
+    Saving a run that is already saved there returns the existing folder as it is (whatever ``include_svm`` says;
+    :func:`training_rows_inside` of its manifest tells what it holds). Only channels with status ``"ok"`` are
+    written. CH3 (:data:`UNSAVED_CHANNELS`) is left out by default and recorded as ``"not_saved"``; with
+    ``include_svm=True`` it is written as ``svm.joblib`` like any scikit-learn channel (checksummed, probe-checked,
+    verified on load), and the manifest declares the training rows it holds (its support vectors) under
+    :data:`TRAINING_ROWS_KEY` and in its ``contents`` text. Sets ``run.bundle_path``. Raises ``ValueError`` when no
+    channel the bundle would keep was fitted (a CH3-only run without ``include_svm``), or when the run has no
+    held-out rows in memory (a loaded run without its data cannot be saved again). When a save fails and its hidden
+    work folder cannot be removed either, the ``OSError`` raised names that folder (:func:`find_leftovers` lists it).
     """
     run_id = _check_name(run.run_id)
     fitted = run.ok_channels()
     if not fitted:
         raise ValueError("Nothing to save: no channel of this run was fitted.")
-    kept = _kept_channels(run)
-    if not kept:
-        raise ValueError("Nothing to save: " + " ".join(UNSAVED_CHANNELS[key] for key in fitted))
     root = Path(directory) if directory is not None else Path(settings_mod.MODELS_DIR)
     final = root / run_id
     if final.exists():
@@ -686,11 +819,17 @@ def save_run(run: TrainingRun, directory: Path | None = None) -> Path:
             run.bundle_path = str(final)
             return final
         raise FileExistsError(f"{final} already exists and is not the saved bundle of run {run_id}.")
+    kept = _kept_channels(run, include_svm)
+    if not kept:
+        names = ", ".join(_channel_label(key) for key in fitted)
+        raise ValueError(f"Nothing to save: the only fitted channel is {names}, which saved sets leave out unless it "
+                         "is saved by choice (include_svm=True; the \"Also save CH3 (RBF SVM)\" box at the Logbook), "
+                         "because a kernel SVM is made of its training rows (its support vectors, standardised).")
     if not len(run.data.y_test):  # (not the property: runs made before an in-place code reload lack it)
         raise ValueError("This run has no held-out rows in memory, so its fingerprints cannot be recorded. Rebuild "
                          "them first (load the bundle again with the data folder available).")
     root.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp(prefix=f".saving-{run_id}-", dir=root))
+    work = Path(tempfile.mkdtemp(prefix=f"{SAVING_PREFIX}{run_id}-", dir=root))
     try:
         channel_files: dict[str, list[str]] = {}
         for key in kept:
@@ -712,19 +851,29 @@ def save_run(run: TrainingRun, directory: Path | None = None) -> Path:
             arrays[f"labels__{key}"] = labels
         np.savez(work / PROBE_FILE, **arrays)
         files = {p.name: sha256_file(p) for p in sorted(work.iterdir()) if p.is_file()}
-        manifest = _build_manifest(run, channel_files, files, probe_seed)
+        training_rows: dict[str, int] = {}
+        for key in kept:
+            if key in UNSAVED_CHANNELS:  # saved by choice: declare the training rows its model holds
+                result = run.channels[key]
+                count = support_vector_count(result.estimator) or int(
+                    (result.extra or {}).get("support_vectors") or 0)
+                training_rows[key] = int(count)
+        manifest = _build_manifest(run, channel_files, files, probe_seed, training_rows)
         (work / MANIFEST_FILE).write_text(_manifest_text(manifest), encoding="utf-8", newline="\n")
         try:
             replace_with_retry(work, final)
         except OSError:
-            # Another session may have saved the same run a moment ago: then its bundle stands.
+            # Another session may have saved the same run a moment ago: then its bundle stands (whatever of the
+            # work folder cannot be removed is listed by find_leftovers).
             if (final / MANIFEST_FILE).is_file() and _read_manifest(final).get("run_id") == run_id:
-                shutil.rmtree(work, ignore_errors=True)
+                _discard_work(work)
                 run.bundle_path = str(final)
                 return final
             raise
-    except BaseException:
-        shutil.rmtree(work, ignore_errors=True)
+    except BaseException as exc:
+        left = _discard_work(work)
+        if left and isinstance(exc, Exception):
+            raise OSError(f"{_one_line(exc)} {left}") from exc
         raise
     run.bundle_path = str(final)
     return final
@@ -834,8 +983,8 @@ def _verification_message(identical: Mapping[str, bool], diffs: Mapping[str, flo
     largest = max(diffs.values(), default=0.0)
     if not mismatches:
         if n and not failed:
-            what = "the only channel" if n == 1 else f"all {n} channels"
-            return True, f"Verified: {what} reproduced their saved probe readings exactly."
+            what = "the only channel reproduced its" if n == 1 else f"all {n} channels reproduced their"
+            return True, f"Verified: {what} saved probe readings exactly."
         if not n:
             return False, "Not verified: the bundle holds no fitted channel."
         names = ", ".join(f"{_channel_label(k)} (largest difference {diffs[k]:.3g})" for k in failed)
@@ -945,16 +1094,26 @@ def _summary(folder: Path, manifest: Mapping[str, Any]) -> BundleSummary:
         best_channel=None if best_channel is None else str(best_channel),
         best_balanced_accuracy=None if best is None else float(best),
         problem=_manifest_problem(manifest),
+        holds_training_rows=sum(training_rows_inside(manifest).values()),
     )
+
+
+def read_bundle_summary(path: Path) -> BundleSummary:
+    """The Logbook line of the bundle in ``path``, read from its manifest only (no model is loaded).
+
+    Raises :class:`BundleIntegrityError` when the folder holds no readable manifest.
+    """
+    folder = Path(path)
+    return _summary(folder, _read_manifest(folder))
 
 
 def scan_bundles(directory: Path | None = None) -> tuple[list[BundleSummary], list[tuple[Path, str]]]:
     """The bundles in ``directory`` (default ``settings.MODELS_DIR``), newest first, and the folders that hold a
     manifest which cannot be read, each with the reason.
 
-    Only the manifests are read. Hidden folders (unfinished saves) and folders without a manifest are not bundles
-    and are left out silently. A manifest that cannot be read, or whose content is malformed, never raises: its
-    folder goes to the second list.
+    Only the manifests are read. Hidden folders and folders without a manifest are not bundles and are left out
+    here; the hidden work folders a save or a delete left behind are listed by :func:`find_leftovers`. A manifest
+    that cannot be read, or whose content is malformed, never raises: its folder goes to the second list.
     """
     root = Path(directory) if directory is not None else Path(settings_mod.MODELS_DIR)
     if not root.is_dir():
@@ -994,21 +1153,152 @@ def _remove_tree(folder: Path, retries: int = 3) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
+def _remove_file(path: Path, retries: int = 3) -> None:
+    """Delete one file, clearing a read-only flag and retrying briefly (antivirus scans can hold files)."""
+    for attempt in range(retries + 1):
+        try:
+            Path(path).unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt == retries:
+                raise
+            try:
+                Path(path).chmod(0o700)
+            except OSError:
+                pass
+            time.sleep(0.2 * (attempt + 1))
+
+
+def _remove_bundle_files(folder: Path) -> None:
+    """Remove a bundle folder: models made of training rows first, the manifest last, then the folder itself.
+
+    So whatever a held file leaves behind holds no training rows when it can be helped, and still describes itself
+    (its manifest) while any file of it remains.
+    """
+    entries = sorted(Path(folder).iterdir())
+    first = [p for p in entries if p.name in _ROW_FILES]
+    last = [p for p in entries if p.name == MANIFEST_FILE]
+    for entry in first + [p for p in entries if p not in first and p not in last] + last:
+        if entry.is_dir() and not entry.is_symlink():
+            _remove_tree(entry)
+        else:
+            _remove_file(entry)
+    _remove_tree(folder)
+
+
+def _one_line(exc: BaseException) -> str:
+    """The first line of an exception's message (its type name when it has none)."""
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    return lines[0] if lines else type(exc).__name__
+
+
+def _leftover_sentence(folder: Path) -> str:
+    """One sentence naming a hidden work folder that could not be removed, and what is still in it."""
+    try:
+        names = sorted(p.name for p in Path(folder).iterdir())
+    except OSError:
+        names = []
+    held = ", ".join(names) if names else "no files"
+    rows = (" svm.joblib among them still holds CH3's training rows (its support vectors)."
+            if any(name in _ROW_FILES for name in names) else "")
+    return (f"The hidden folder {folder} is left over, holding {held}.{rows} The Logbook lists such leftovers and "
+            "removes them once nothing holds their files.")
+
+
+def _discard_work(work: Path) -> str:
+    """Remove the work folder of a save that did not finish; returns "" when it is gone, else a sentence naming
+    what is left (see :func:`find_leftovers`)."""
+    try:
+        _remove_tree(work)
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return _leftover_sentence(work)
+    return ""
+
+
 def delete_bundle(path: Path) -> None:
     """Delete a saved bundle folder for good.
 
     Only a folder holding a ``manifest.json`` is deleted. It is first renamed to a hidden name (one atomic step, so
-    the Logbook never lists a half-deleted bundle) and then removed. Raises ``FileNotFoundError`` when the folder
-    does not exist and :class:`BundleIntegrityError` when it is not a bundle.
+    the Logbook never lists a half-deleted bundle) and then removed, any model made of training rows
+    (``svm.joblib``) first and the manifest last. Raises ``FileNotFoundError`` when the folder does not exist and
+    :class:`BundleIntegrityError` when it is not a bundle. When a file stays held past the retries, the bundle is
+    renamed back to its own name when possible (so it is listed again and can be deleted again), and a
+    :class:`BundleDeleteError` says so, or names the hidden folder left over (:func:`find_leftovers` lists it).
     """
     folder = Path(path)
     if not folder.is_dir():
         raise FileNotFoundError(f"No saved channel set at {folder}.")
     if not (folder / MANIFEST_FILE).is_file():
         raise BundleIntegrityError(f"{folder} is not a saved channel set (no {MANIFEST_FILE}); nothing was deleted.")
-    doomed = folder.parent / f".deleting-{folder.name}-{datetime.now(timezone.utc):%H%M%S%f}"
+    doomed = folder.parent / f"{DELETING_PREFIX}{folder.name}-{datetime.now(timezone.utc):%H%M%S%f}"
     replace_with_retry(folder, doomed)
-    _remove_tree(doomed)
+    try:
+        _remove_bundle_files(doomed)
+    except OSError as exc:
+        reason = f"The saved channel set {folder.name} could not be deleted completely ({_one_line(exc)})."
+        if (doomed / MANIFEST_FILE).is_file() and not folder.exists():
+            try:
+                replace_with_retry(doomed, folder)
+            except OSError:
+                pass
+            else:
+                raise BundleDeleteError(f"{reason} It was put back under its own name, so it is listed again, "
+                                        "though some of its files may be gone: delete it again once nothing holds "
+                                        "them.") from exc
+        raise BundleDeleteError(f"{reason} {_leftover_sentence(doomed)}") from exc
+
+
+def find_leftovers(directory: Path | None = None, *, min_age_seconds: float = 0.0) -> list[LeftoverFolder]:
+    """The hidden work folders (``.saving-*``, ``.deleting-*``) in ``directory`` (default ``settings.MODELS_DIR``).
+
+    A save or a delete removes its work folder when it finishes, so such a folder is either still in use or left
+    over by one that failed (a file held by another program past the retries). Only folders whose content has not
+    changed for ``min_age_seconds`` are listed, so a caller can leave out a save or a delete still running in
+    another session. Never raises for a folder that vanishes meanwhile; returns ``[]`` without a models folder.
+    """
+    root = Path(directory) if directory is not None else Path(settings_mod.MODELS_DIR)
+    if not root.is_dir():
+        return []
+    now = time.time()
+    found: list[LeftoverFolder] = []
+    for folder in sorted(root.iterdir()):
+        name = folder.name
+        kind = "save" if name.startswith(SAVING_PREFIX) else "delete" if name.startswith(DELETING_PREFIX) else ""
+        if not kind:
+            continue
+        try:
+            if not folder.is_dir():
+                continue
+            entries = list(folder.iterdir())
+            changed = max([folder.stat().st_mtime, *(entry.stat().st_mtime for entry in entries)])
+        except OSError:
+            continue
+        age = max(now - changed, 0.0)
+        if age < float(min_age_seconds):
+            continue
+        names = tuple(sorted(entry.name for entry in entries))
+        found.append(LeftoverFolder(path=folder, kind=kind, files=names,
+                                    holds_training_rows=any(n in _ROW_FILES for n in names), age_seconds=age))
+    return found
+
+
+def remove_leftover(path: Path) -> None:
+    """Remove a hidden work folder listed by :func:`find_leftovers` for good (nothing happens when it is gone).
+
+    Raises ``ValueError`` for any folder not named like a save's or a delete's work folder, and ``OSError`` when a
+    file in it is still held after the retries.
+    """
+    folder = Path(path)
+    if not folder.name.startswith((SAVING_PREFIX, DELETING_PREFIX)):
+        raise ValueError(f"{folder} is not the work folder of a save or a delete; nothing was removed.")
+    if not folder.exists():
+        return
+    try:
+        _remove_tree(folder)
+    except FileNotFoundError:
+        return
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -1126,18 +1416,31 @@ def _empty_data(bundle: LoadedBundle) -> TrainingData:
     )
 
 
-def _score_rows(estimator: Any, X: np.ndarray, n_classes: int) -> tuple[np.ndarray, float]:
+def _score_rows(estimator: Any, X: np.ndarray, n_classes: int, *,
+                after_block: Callable[[int, int], None] | None = None) -> tuple[np.ndarray, float]:
     """Probabilities (float32, n x K, code order) of ``estimator`` on ``X``; returns (proba, seconds).
 
     The rows are scored in the same fixed blocks as at fit time (:func:`graticule.models.train.score_in_blocks`),
     so a model whose arithmetic depends on the batch size (the neural net) reads exactly as it did then. Forests
     score on one thread (:func:`deterministic`), so restoring the same bundle twice gives the very same readings.
+    ``after_block`` receives (rows scored so far, rows in all) after each block; it does not change the blocks.
     """
     started = time.perf_counter()
     with deterministic(estimator):
-        raw, _ = score_in_blocks(estimator, X)
+        raw, _ = score_in_blocks(estimator, X, after_block=after_block)
     raw = raw if len(X) else np.empty((0, n_classes))
     return _tidy_proba(raw, getattr(estimator, "classes_", None), n_classes), time.perf_counter() - started
+
+
+def _rows_reporter(progress: Callable[[str, float], None], label: str, index: int,
+                   count: int) -> Callable[[int, int], None]:
+    """A :func:`score_in_blocks` ``after_block`` callback for channel ``index`` of ``count``: reports the rows
+    scored so far as (message, fraction of the whole restore)."""
+    def report(done: int, total: int) -> None:
+        if 0 < done < total:
+            progress(f"{label} reads the held-out rows: {done:,} of {total:,}", (index + done / total) / count)
+
+    return report
 
 
 def restore_run(bundle: LoadedBundle, data: TrainingData | None = None, *,
@@ -1150,9 +1453,10 @@ def restore_run(bundle: LoadedBundle, data: TrainingData | None = None, *,
     only). Without ``data`` the run carries empty matrices with the bundle's classes, feature names and feature
     choice (``has_test_rows`` is False), channels have empty predictions, and the reference sample is made of
     quantile vectors. The feature quantiles always come from the bundle; timings, metrics and the reports of the
-    fit (row counts, de-duplication, Top-K ranking, how long the matrices took) are those saved. A channel the
-    bundle does not keep (CH3) comes back with status ``"not_saved"`` and a note saying why. ``progress`` receives
-    (message, fraction) before each channel scores the held-out rows.
+    fit (row counts, de-duplication, Top-K ranking, how long the matrices took) are those saved. CH3 saved by choice
+    comes back as an ordinary ``"ok"`` channel like the others; left out (the default), it comes back with status
+    ``"not_saved"`` and a note saying why. ``progress`` receives (message, fraction) before each channel scores the
+    held-out rows and after every block of rows it scores (the kernel SVM can take as long as it did at fit time).
     """
     manifest = bundle.manifest
     request = _train_request_from(manifest)
@@ -1186,13 +1490,18 @@ def restore_run(bundle: LoadedBundle, data: TrainingData | None = None, *,
         if result.status == "ok" and result.estimator is None:
             result.status = "failed"
             result.error = "The model of this channel is missing from the saved bundle."
-        if result.status == NOT_SAVED and key in UNSAVED_CHANNELS and UNSAVED_CHANNELS[key] not in result.notes:
-            result.notes.append(UNSAVED_CHANNELS[key])
+        if result.status == NOT_SAVED and key in UNSAVED_CHANNELS:
+            former = _FORMER_UNSAVED_NOTES.get(key, ())
+            result.notes = [n for n in result.notes if n not in former]  # an older bundle's wording of the reason
+            if UNSAVED_CHANNELS[key] not in result.notes:
+                result.notes.append(UNSAVED_CHANNELS[key])
         if result.status == "ok":
             if len(data.y_test):
+                tick = None
                 if progress is not None:
                     progress(f"{_channel_label(key)} reads the {len(data.y_test):,} held-out rows", index / len(keys))
-                result.proba, _ = _score_rows(result.estimator, data.X_test, n_classes)
+                    tick = _rows_reporter(progress, _channel_label(key), index, len(keys))
+                result.proba, _ = _score_rows(result.estimator, data.X_test, n_classes, after_block=tick)
                 result.y_pred = result.proba.argmax(axis=1).astype(np.int64)
                 again = quick_metrics(data.y_test, result.y_pred, n_classes)
                 saved = extra["metrics"]
@@ -1216,9 +1525,11 @@ def restore_run(bundle: LoadedBundle, data: TrainingData | None = None, *,
 
 
 __all__ = [
-    "BUNDLE_FORMAT", "MANIFEST_DIGEST_KEY", "NOT_SAVED", "UNSAVED_CHANNELS", "BundleIntegrityError",
-    "BundleReadError", "BundleSummary", "LoadedBundle", "RebuildError", "VerificationReport", "content_digests",
-    "delete_bundle", "deterministic", "library_versions", "list_bundles", "load_bundle", "manifest_digest",
-    "probe_vectors", "quantile_vectors", "rebuild_prepared", "rebuild_training_data", "restore_run", "save_run",
-    "scan_bundles", "score_exactly", "sha256_file", "split_fingerprints", "write_manifest",
+    "BUNDLE_FORMAT", "DELETING_PREFIX", "MANIFEST_DIGEST_KEY", "NOT_SAVED", "SAVING_PREFIX", "TRAINING_ROWS_KEY",
+    "UNSAVED_CHANNELS", "BundleDeleteError", "BundleIntegrityError", "BundleReadError", "BundleSummary",
+    "LeftoverFolder", "LoadedBundle", "RebuildError", "VerificationReport", "content_digests", "delete_bundle",
+    "deterministic", "find_leftovers", "library_versions", "list_bundles", "load_bundle", "manifest_digest",
+    "probe_vectors", "quantile_vectors", "read_bundle_summary", "rebuild_prepared", "rebuild_training_data",
+    "remove_leftover", "restore_run", "save_run", "scan_bundles", "score_exactly", "sha256_file",
+    "split_fingerprints", "support_vector_count", "training_rows_inside", "write_manifest",
 ]

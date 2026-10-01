@@ -127,8 +127,9 @@ def consensus_metrics(run: "TrainingRun", keys: Sequence[str] | None = None) -> 
 def belongs_to_run(obj: Any, run: "TrainingRun | None") -> bool:
     """True when an Assay batch or simulation session ``obj`` was made with ``run`` itself.
 
-    A fit and its copy loaded from disk share one run id but are different channel sets (the copy never holds CH3
-    and may lack its held-out rows), so the run OBJECT is compared whenever ``obj`` can tell: through its
+    A fit and its copy loaded from disk share one run id but are different channel sets (the copy holds CH3 only
+    when it was saved by choice, and may lack its held-out rows), so the run OBJECT is compared whenever ``obj`` can
+    tell: through its
     ``made_with(run)`` method (a :class:`graticule.scoring.ScoredBatch`) or its ``run`` attribute (a
     :class:`graticule.simulate.SimulationSession`). An object that only names its run (``run_id``) is compared by
     id; else its class names are compared with the run's when they can be read (an Assay batch's ``prob_<class>``

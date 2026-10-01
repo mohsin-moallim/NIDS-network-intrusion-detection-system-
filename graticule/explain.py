@@ -398,7 +398,8 @@ def background_for(run: "TrainingRun") -> tuple[np.ndarray, str]:
         return (np.asarray(run.reference_sample, dtype=np.float32),
                 f"training rows from the run's reference sample of {rows:,}")
     vectors = background_from_quantiles(run.feature_quantiles, QUANTILE_BACKGROUND_ROWS, int(run.request.seed))
-    return vectors, "synthetic flows read off the saved training quantiles (the saved set holds no training rows)"
+    return vectors, ("synthetic flows read off the saved training quantiles (the run was loaded without its "
+                     "training rows)")
 
 
 # --------------------------------------------------------------------------------------------------------------

@@ -315,8 +315,9 @@ class ScoredBatch:
     def made_with(self, run: Any) -> bool:
         """True when ``run`` is the very run object that scored this file.
 
-        A fit and its copy loaded from disk share a run id but are different channel sets (the copy never holds
-        CH3 and may lack its held-out rows), so the object is compared, as 06 Sweep compares its stream's run.
+        A fit and its copy loaded from disk share a run id but are different channel sets (the copy holds CH3 only
+        when it was saved by choice, and may lack its held-out rows), so the object is compared, as 06 Sweep
+        compares its stream's run.
         A batch that holds no reference (its run could not be referenced weakly) falls back to the id, the run's
         origin and its fitted channels.
         """
