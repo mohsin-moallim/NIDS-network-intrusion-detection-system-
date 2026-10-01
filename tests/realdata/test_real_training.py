@@ -1,9 +1,10 @@
 """02 Fit on the recorded files (skipped when the CIC-IDS2017 folder is not available).
 
-These run in the default suite whenever the data folder is configured, so they are kept to about ten seconds: one
-10,000-row Wednesday sample (prepared once and shared) fitted in both modes with the forest, XGBoost and logistic
-regression at full size, and a Thursday-morning sample in multi-class mode with the two quick channels. Reading the
-whole Wednesday file once is most of the cost; the 200,000-row timings live in ``tests/slow/test_benchmark.py``.
+Every check here reads a whole recorded file and fits full-size channels, so all are also marked ``slow``: the
+default run stays short, and ``-m realdata`` runs them (the quick real-data checks of headers and labels in
+``test_real_files.py`` stay in the default run). The two Wednesday checks share one 10,000-row sample, fitted in
+both modes with the forest, XGBoost and logistic regression; the Thursday-morning check fits the two quick channels
+in multi-class mode. The 200,000-row timings live in ``tests/slow/test_benchmark.py``.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ def _fit(prepared: PreparedDataset, request: TrainRequest) -> tuple[TrainingData
     return data, run
 
 
+@pytest.mark.slow  # reads the whole Wednesday file (about 6 s with the fits)
 def test_wednesday_binary_full_size_channels(real_data_dir: Path) -> None:
     prepared = _prepared(real_data_dir, WEDNESDAY)
     request = TrainRequest(mode="binary", channels=("forest", "xgboost", "logreg"), profile="full")
@@ -55,6 +57,7 @@ def test_wednesday_binary_full_size_channels(real_data_dir: Path) -> None:
     assert 0 < run.channels["xgboost"].extra["best_iteration"] < 300
 
 
+@pytest.mark.slow  # shares the Wednesday sample of the test above
 def test_wednesday_multiclass_full_size_channels(real_data_dir: Path) -> None:
     prepared = _prepared(real_data_dir, WEDNESDAY)
     request = TrainRequest(mode="multiclass", channels=("forest", "xgboost", "logreg"), profile="full")
@@ -69,6 +72,7 @@ def test_wednesday_multiclass_full_size_channels(real_data_dir: Path) -> None:
     assert run.channels["forest"].extra["metrics"]["balanced_accuracy"] > 0.9
 
 
+@pytest.mark.slow  # reads the whole Thursday-morning file (about 2 s with the fits)
 def test_thursday_web_attacks_drop_the_rare_class(real_data_dir: Path) -> None:
     prepared = _prepared(real_data_dir, THURSDAY_WEB)
     assert not prepared.request.merge_web_attacks

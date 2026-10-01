@@ -37,6 +37,7 @@ def inject_css() -> None:
             letter-spacing: 0.06em; font-size: 0.8rem; line-height: 1.25; white-space: normal;
         }}
         [class*="st-key-stn_cur_"] {{ border-bottom: 3px solid {p.secondary}; }}
+        [class*="st-key-g_cm_"] {{ overflow-x: auto; }}
         .st-key-g_stepper [data-testid="stHorizontalBlock"] {{ flex-wrap: nowrap !important; overflow-x: auto;
             scrollbar-width: thin; }}
         .st-key-g_stepper [data-testid="stColumn"] {{ min-width: 5.5rem !important; flex: 1 0 auto !important;

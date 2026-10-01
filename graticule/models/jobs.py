@@ -1,5 +1,11 @@
 """Background training jobs: one fit at a time per process, with progress, elapsed time and cancellation.
 
+The work slot. Only one heavy job runs per process: a fit, or a measurement that fits or scores models at length
+(cross-validation and permutation importance at 03 Measure). Each takes the slot with :func:`claim_slot` before it
+starts and gives it back with :func:`release_slot`; while it is taken, :func:`slot_holder` names the work holding
+it, and a second job is turned away with :class:`JobBusyError` rather than queued, so fit times and scoring speeds
+are measured on an otherwise idle process.
+
 A :class:`TrainingJob` runs the whole 02 Fit procedure (building the training matrices, then fitting each requested
 channel) either in a daemon thread (:meth:`TrainingJob.start`) or on the calling thread
 (:meth:`TrainingJob.run_inline`, used when ``GRATICULE_SYNC_TRAINING=1``). The worker never imports or calls the web
@@ -37,7 +43,7 @@ import traceback
 import uuid
 import warnings
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -309,6 +315,44 @@ class _Tracker:
 _RUN_LOCK = threading.Lock()
 _JOBS: "OrderedDict[str, TrainingJob]" = OrderedDict()
 _JOBS_LOCK = threading.Lock()
+# What holds the work slot (``_RUN_LOCK``) right now, for messages; guarded by _HOLDER_LOCK.
+_HOLDER: str | None = None
+_HOLDER_LOCK = threading.Lock()
+
+
+def claim_slot(holder: str) -> bool:
+    """Take the process-wide work slot for ``holder`` (a few words, e.g. ``"a fit"``) without waiting.
+
+    Returns False, and changes nothing, when another job holds it. Whoever gets True must call
+    :func:`release_slot` exactly once when the work ends.
+    """
+    global _HOLDER
+    if not _RUN_LOCK.acquire(blocking=False):
+        return False
+    with _HOLDER_LOCK:
+        _HOLDER = str(holder)
+    return True
+
+
+def release_slot() -> None:
+    """Give back the work slot taken with :func:`claim_slot`."""
+    global _HOLDER
+    with _HOLDER_LOCK:
+        _HOLDER = None
+    _RUN_LOCK.release()
+
+
+def slot_holder() -> str | None:
+    """What holds the work slot now (e.g. ``"a fit"``, ``"a cross-validation"``), or None when it is free."""
+    with _HOLDER_LOCK:
+        return _HOLDER if _RUN_LOCK.locked() else None
+
+
+def busy_message(holder: str | None = None) -> str:
+    """The sentence shown when work is turned away because ``holder`` (default: the current holder) is running."""
+    what = holder or slot_holder() or "another job"
+    return (f"{what[:1].upper()}{what[1:]} is running in this app (perhaps from another browser tab). Only one fit "
+            "or measurement runs at a time; wait for it to finish or cancel it, then try again.")
 
 
 def _remember(job: "TrainingJob") -> None:
@@ -366,9 +410,15 @@ class TrainingJob:
         run_id: id of the run this job produced (kept after :meth:`release_result`), or None.
         error: user-facing error text (with traceback for unexpected errors), or None.
         exception: the exception that ended the job, or None.
+        hook_error: what went wrong in ``on_finished`` (``"Type: message"``), or None.
+
+    ``on_finished`` (optional) is called on the job's thread with the run as soon as a run with at least one fitted
+    channel exists, whether or not any page ever adopts it (the UI records the run history this way). It must be
+    thread-safe and must not touch the web framework; an error it raises is kept in ``hook_error``, never raised.
     """
 
-    def __init__(self, prepared: "PreparedDataset", request: "TrainRequest") -> None:
+    def __init__(self, prepared: "PreparedDataset", request: "TrainRequest", *,
+                 on_finished: "Callable[[TrainingRun], None] | None" = None) -> None:
         self.job_id = f"job-{uuid.uuid4().hex[:12]}"
         self.prepared: PreparedDataset | None = prepared
         self.request = request
@@ -376,6 +426,8 @@ class TrainingJob:
         self.run_id: str | None = None
         self.error: str | None = None
         self.exception: BaseException | None = None
+        self.hook_error: str | None = None
+        self._on_finished = on_finished
         self._token = CancelToken()
         self._tracker = _Tracker(tuple(request.channels), request.feature_mode == "topk")
         self._state: JobState = "queued"
@@ -393,7 +445,8 @@ class TrainingJob:
         with self._state_lock:
             if self._launched:
                 raise RuntimeError("This job has already been started.")
-            if not _RUN_LOCK.acquire(blocking=False):
+            holder = slot_holder()
+            if not claim_slot("a fit"):
                 busy = True
             else:
                 busy = False
@@ -402,7 +455,7 @@ class TrainingJob:
                 self._started = time.perf_counter()
         if busy:
             _forget(self)  # nobody watches a job that never started; the caller decides whether to keep it
-            raise JobBusyError("Another fit is still running in this app. Wait for it to finish or cancel it.")
+            raise JobBusyError(busy_message(holder))
         _remember(self)  # (again, if it was turned away earlier)
 
     def start(self) -> None:
@@ -494,6 +547,11 @@ class TrainingJob:
                                 cancel=self._token, job_id=self.job_id)
             self.run_id = run.run_id
             self.result = run
+            if self._on_finished is not None and run.ok_channels():
+                try:
+                    self._on_finished(run)
+                except Exception as exc:  # noqa: BLE001 - a failing hook must not fail the fit
+                    self.hook_error = f"{type(exc).__name__}: {exc}"
             # Only the run says whether the cancel stopped something: a cancel pressed after the last channel had
             # finished (while the reference rows were kept, say) leaves a complete run, which ends as done.
             if run.cancelled:
@@ -522,4 +580,4 @@ class TrainingJob:
                 self._ended = time.perf_counter()
                 self.prepared = None
             self._done.set()
-            _RUN_LOCK.release()
+            release_slot()

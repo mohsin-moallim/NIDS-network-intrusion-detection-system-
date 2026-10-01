@@ -7,7 +7,11 @@ The training itself lives in :mod:`graticule.models` and never touches Streamlit
   follows already shows the running fit;
 * polls the job once a second from a fragment, so only the progress panel redraws while channels are fitted;
 * draws the readings of a stored run. Readings are derived from the predictions stored in the run (never by
-  refitting or predicting again) and are cached per run id, so reruns stay cheap.
+  refitting or predicting again) and are kept on the run object itself, so reruns stay cheap and two runs sharing
+  an id (a fit and its copy loaded from disk) never share a table.
+
+Every job also writes its run to the run history from its own thread as soon as the run exists
+(:func:`record_finished_run`), so a fit that no page ever adopts (its tab was closed) is still recorded.
 
 Test hook: when the environment variable ``GRATICULE_TEST_PROFILE`` is ``"1"`` every fit uses the shrunken
 ``profile="test"`` models (few trees, rounds and iterations), which keeps the UI tests fast. It is never set in
@@ -16,9 +20,11 @@ normal use.
 
 from __future__ import annotations
 
+import functools
 import html
 import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -29,6 +35,7 @@ from graticule import theme
 from graticule.data.prepare import PreparedDataset
 from graticule.data.sampling import SingleClassError
 from graticule.evaluate import quick_metrics
+from graticule.history import RunHistory
 from graticule.models.jobs import JobBusyError, TrainingCancelled, TrainingJob, get_job, sync_training_requested
 from graticule.models.train import TrainingRun, TrainRequest
 from graticule.models.zoo import MODEL_KEYS, Profile
@@ -40,11 +47,12 @@ TEST_PROFILE_ENV = "GRATICULE_TEST_PROFILE"
 # Session flag: the job id for which the progress panel has already asked for a full rerun (never twice).
 RERUN_DONE = "fit_rerun_for_job"
 STATUS_TEXT = {"ok": "fitted", "failed": "failed", "cancelled": "cancelled", "skipped": "skipped",
-               "waiting": "waiting", "queued": "waiting", "running": "fitting", "done": "fitted"}
+               "waiting": "waiting", "queued": "waiting", "running": "fitting", "done": "fitted",
+               "not_saved": "not saved"}
 READING_COLUMNS: tuple[str, ...] = ("Channel", "Status", "Rows used", "Fit s", "Flows/s", "Accuracy",
                                     "Balanced accuracy", "Macro F1", "Notes")
-BUSY_TEXT = ("Another fit is running in this app (perhaps from another browser tab). Wait for it to finish or cancel "
-             "it there, then press Fit again.")
+#: Attribute of a run object holding its readings table (see :func:`kept_readings`).
+READINGS_ATTR = "fit_readings_table"
 
 
 def training_profile() -> Profile:
@@ -67,6 +75,17 @@ def format_elapsed(seconds: float) -> str:
 # --------------------------------------------------------------------------------------------------------------
 # Starting a fit
 # --------------------------------------------------------------------------------------------------------------
+def record_finished_run(run: TrainingRun, *, db_path: Path | None = None) -> None:
+    """Write a finished fit to the run history file ``db_path`` (default: the usual one).
+
+    Called by the job on its own thread, so it touches no session state. The file is fixed when the fit starts,
+    so a job that ends later still writes where the app was writing then. Recording is idempotent per run id: the
+    session that adopts the run later (which records it again, see :func:`ui.state.record_history`) adds no second
+    line.
+    """
+    RunHistory(db_path).record(run)
+
+
 def start_fit(prepared: PreparedDataset, request: TrainRequest) -> bool:
     """Start fitting ``request`` on ``prepared``: in the background, or inline when synchronous fits are requested.
 
@@ -76,12 +95,13 @@ def start_fit(prepared: PreparedDataset, request: TrainRequest) -> bool:
     (finished, nothing fitted, another fit running, failure) is left as the fit message that 02 Fit shows once.
     Returns True when a job started or a run was stored.
     """
-    job = TrainingJob(prepared, request)
+    job = TrainingJob(prepared, request,
+                      on_finished=functools.partial(record_finished_run, db_path=RunHistory().path))
     if not sync_training_requested():
         try:
             job.start()
-        except JobBusyError:
-            state.set_fit_notice("warning", BUSY_TEXT)
+        except JobBusyError as exc:
+            state.set_fit_notice("warning", str(exc))
             return False
         st.session_state[state.JOB_ID] = job.job_id
         st.session_state.pop(RERUN_DONE, None)
@@ -92,8 +112,8 @@ def start_fit(prepared: PreparedDataset, request: TrainRequest) -> bool:
     except SingleClassError as exc:
         state.set_fit_notice("warning", f"Nothing was fitted. {exc}")
         return False
-    except JobBusyError:
-        state.set_fit_notice("warning", BUSY_TEXT)
+    except JobBusyError as exc:
+        state.set_fit_notice("warning", str(exc))
         return False
     except TrainingCancelled:
         state.set_fit_notice("info", "Fit cancelled before any channel was fitted. Nothing was stored; the previous "
@@ -217,10 +237,30 @@ def build_readings(run: TrainingRun) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=list(READING_COLUMNS))
 
 
-@st.cache_resource(max_entries=8, show_spinner=False)
-def cached_readings(run_id: str, _run: TrainingRun) -> pd.DataFrame:
-    """:func:`build_readings` once per run id (shared; never modify the returned frame)."""
-    return build_readings(_run)
+def kept_readings(run: TrainingRun) -> pd.DataFrame:
+    """:func:`build_readings` once per run object, kept on the object (never modify the returned frame).
+
+    Keeping the table on the run itself, rather than in a cache keyed by run id, means a fit and every copy of it
+    loaded from disk (which share the id but may carry readings and notes of their own) each show their own table.
+    """
+    table = run.__dict__.get(READINGS_ATTR)
+    if not isinstance(table, pd.DataFrame):
+        table = build_readings(run)
+        run.__dict__[READINGS_ATTR] = table
+    return table
+
+
+def split_sizes(run: TrainingRun) -> tuple[int, int, bool]:
+    """(training rows, test rows, rows in memory) of a run.
+
+    A run loaded from disk without its held-out rows holds no matrices; its sizes then come from the reports saved
+    with it, and the third value is False.
+    """
+    n_train, n_test = len(run.data.y_train), len(run.data.y_test)
+    if n_test:
+        return n_train, n_test, True
+    rows = (run.data.reports or {}).get("rows") or {}
+    return _int(rows.get("train")) or n_train, _int(rows.get("test")), False
 
 
 def best_channel(readings: pd.DataFrame) -> tuple[str, float] | None:
@@ -332,30 +372,38 @@ def _run_chips(run: TrainingRun) -> list[str]:
     choice = run.data.feature_choice
     feature_text = {"curated": "curated", "all": "all numeric", "topk": f"top {request.top_k}"}.get(
         request.feature_mode, request.feature_mode)
+    n_train, n_test, _ = split_sizes(run)
     chips = [
         f"run {run.run_id}",
         "binary: normal vs attack" if request.mode == "binary" else f"multi-class: {len(run.data.classes)} classes",
         f"{len(run.data.feature_names)} columns ({feature_text})",
         "weights: balanced" if request.balanced else "weights: none",
-        f"train {len(run.data.y_train):,} · test {len(run.data.y_test):,} rows",
+        f"train {n_train:,} · test {n_test:,} rows",
         f"seed {request.seed}",
         f"fitted in {state.fit_duration_text(run)}",
     ]
     if getattr(choice, "include_port", request.include_port):
         chips.insert(3, "Destination Port included")
+    if getattr(run, "origin", "fitted") == "loaded":
+        chips.append("loaded from disk")
     if request.profile != "full":
         chips.append(f"profile {request.profile}")
     return chips
 
 
 def _test_distribution(run: TrainingRun) -> str:
-    """The held-out classes and their row counts, with the shape cues."""
-    codes, counts = np.unique(np.asarray(run.data.y_test), return_counts=True)
+    """The held-out classes and their row counts, with the shape cues (from the saved reports when the rows are
+    not in memory)."""
+    if len(run.data.y_test):
+        codes, counts = np.unique(np.asarray(run.data.y_test), return_counts=True)
+        pairs = [(run.data.classes[int(code)], int(count)) for code, count in zip(codes, counts)]
+    else:
+        recorded = (run.data.reports or {}).get("class_counts_test") or {}
+        pairs = [(str(name), _int(count)) for name, count in recorded.items() if _int(count) > 0]
     parts = []
-    for code, count in zip(codes, counts):
-        name = run.data.classes[int(code)]
+    for name, count in pairs:
         glyph = theme.GLYPH_NORMAL if is_benign(name) or name == "Normal" else theme.GLYPH_ATTACK
-        parts.append(f"{glyph} {name} {int(count):,}")
+        parts.append(f"{glyph} {name} {count:,}")
     return " · ".join(parts)
 
 
@@ -375,7 +423,7 @@ def readings_panel(run: TrainingRun, prepared: PreparedDataset | None) -> None:
     st.subheader("Readings", anchor=False)
     components.chips(_run_chips(run))
     _sample_check(run, prepared)
-    readings = cached_readings(run.run_id, run)
+    readings = kept_readings(run)
     st.dataframe(
         readings, hide_index=True, width="stretch",
         column_config={
@@ -396,7 +444,12 @@ def readings_panel(run: TrainingRun, prepared: PreparedDataset | None) -> None:
     svm_note = svm_rows_note(run)
     if svm_note:
         components.chips([svm_note])
-    st.caption(f"Measured on {len(run.data.y_test):,} held-out rows: {_test_distribution(run)}.")
+    _, n_test, in_memory = split_sizes(run)
+    if in_memory:
+        st.caption(f"Measured on {n_test:,} held-out rows: {_test_distribution(run)}.")
+    else:
+        st.caption(f"Measured on {n_test:,} held-out rows when fitted: {_test_distribution(run)}. This run was "
+                   "loaded from disk without them; the readings are those saved with it.")
     best = best_channel(readings)
     if best is not None:
         label, value = best
@@ -417,6 +470,7 @@ def restore_offer(latest_id: str) -> None:
         run = state.run_registry().get(latest_id)
         if run is not None:
             state.store_run(run)
+            state.record_history(run)  # a fit adopted by no session yet (its tab was closed) is recorded now
             state.set_fit_notice("info", f"Restored run {latest_id}. Nothing was refitted.")
 
     with st.container(border=True, key="fit_restore_box"):

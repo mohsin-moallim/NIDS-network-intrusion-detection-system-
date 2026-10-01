@@ -15,11 +15,14 @@ no models or matrices, and the registry's capacity really bounds how many runs s
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import streamlit as st
 
-from graticule.settings import AppSettings, load_settings, save_settings
+from graticule.settings import AppSettings, load_settings, resolve_data_dir, save_settings
 
 if TYPE_CHECKING:
     from graticule.data.prepare import PreparedDataset
@@ -31,10 +34,16 @@ DONE = "g_done"
 LAST_RUN_ID = "g_last_run_id"
 PREPARED = "g_prepared"
 JOB_ID = "g_job_id"
-# The session's own reference to its current run: keeps it readable even if the bounded registry evicts it.
+# The session's own reference to its current run: keeps it readable even if the bounded registry evicts it, and
+# wins over the registry when another session stores a run under the same id (a loaded copy of a fit).
 RUN = "g_run"
 # One message about the end of a fit job (kind, text), shown once by 02 Fit.
 FIT_NOTICE = "g_fit_notice"
+# Run ids this session has written to the run history (each finished fit is recorded once), and the last failure.
+HISTORY_RECORDED = "g_history_recorded"
+HISTORY_ERROR = "g_history_error"
+# Run id -> BundleLoadResult for the runs this session loaded from disk at the Logbook.
+LOADED = "g_loaded_bundles"
 
 NoticeKind = Literal["success", "info", "warning", "error"]
 JobOutcome = Literal["stored", "cancelled", "failed", "lost"]
@@ -182,16 +191,19 @@ def current_run() -> "TrainingRun | None":
     """This session's current fit run (the one 03 Measure onwards read), or ``None`` before the first fit.
 
     A background fit that has finished since the last rerun is adopted first. Nothing is ever refitted here.
+
+    The session's own reference wins over the process registry: a fitted run and the same run loaded from disk
+    share one run id, so when another session loads the saved copy (which replaces the registry entry), this
+    session keeps reading the run it chose. The registry is the fallback (for example after a restore offer).
     """
     collect_finished_job()
     run_id = st.session_state.get(LAST_RUN_ID)
     if run_id is None:
         return None
-    run = run_registry().get(run_id)
-    if run is None:
-        held = st.session_state.get(RUN)
-        run = held if held is not None and getattr(held, "run_id", None) == run_id else None
-    return run
+    held = st.session_state.get(RUN)
+    if held is not None and getattr(held, "run_id", None) == run_id:
+        return held
+    return run_registry().get(run_id)
 
 
 def set_fit_notice(kind: NoticeKind, text: str) -> None:
@@ -254,6 +266,7 @@ def adopt_run(run: "TrainingRun", *, cancelled: bool = False) -> JobOutcome:
     missing = [k for k in run.channels if k not in fitted]
     if fitted:
         store_run(run)
+        record_history(run)
         if cancelled and missing and bool(getattr(run, "cancelled", True)):
             names = ", ".join(_channel_label(k) for k in missing)
             set_fit_notice("info", f"Fit cancelled after {len(fitted)} of {len(run.channels)} channels. The fitted "
@@ -344,3 +357,205 @@ def collect_finished_job() -> JobOutcome | None:
     if not job.finished:
         return None
     return adopt_job(job)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Run history and saved channel sets (Logbook)
+# --------------------------------------------------------------------------------------------------------------
+def record_history(run: "TrainingRun") -> None:
+    """Write a finished fit to the run history, once per run id; a failure is kept for the Logbook, never raised.
+
+    Only fits are recorded (a run loaded from disk is not a new fit). The history call is idempotent per run id as
+    well, so a second session adopting the same run cannot add a second line.
+    """
+    recorded: set[str] = st.session_state.setdefault(HISTORY_RECORDED, set())
+    if run.run_id in recorded or getattr(run, "origin", "fitted") != "fitted":
+        return
+    from graticule.history import RunHistory
+
+    saved = getattr(run, "bundle_path", None)
+    try:
+        RunHistory().record(run, saved_path=Path(saved) if saved else None)
+    except Exception as exc:  # noqa: BLE001 - the history must never break a fit
+        st.session_state[HISTORY_ERROR] = f"The run history could not be written ({type(exc).__name__}: {exc})."
+        return
+    recorded.add(run.run_id)
+    st.session_state.pop(HISTORY_ERROR, None)
+
+
+def history_error() -> str | None:
+    """The last failure to write the run history in this session, if any."""
+    return st.session_state.get(HISTORY_ERROR)
+
+
+def bundle_on_disk(run: "TrainingRun") -> Path | None:
+    """The folder ``run`` was saved to or loaded from, when it still exists on disk."""
+    saved = getattr(run, "bundle_path", None)
+    if not saved:
+        return None
+    folder = Path(saved)
+    return folder if folder.is_dir() else None
+
+
+def unsaved_channel_note(run: "TrainingRun") -> str:
+    """Why some fitted channels of ``run`` are left out of a saved set (CH3), or "" when none are."""
+    from graticule.persist import UNSAVED_CHANNELS
+
+    left_out = [key for key in run.ok_channels() if key in UNSAVED_CHANNELS]
+    return " ".join(UNSAVED_CHANNELS[key] for key in left_out)
+
+
+def save_current_run() -> tuple[NoticeKind, str]:
+    """Save this session's current run as a bundle and note the folder in the run history; returns a message.
+
+    Any failure (no channel to keep, a folder of that name already there and damaged, a full disk, a model that
+    cannot be written) comes back as an error message; nothing is raised into the page.
+    """
+    run = current_run()
+    if run is None:
+        return "warning", "There is no fitted run to save. Fit channels at 02 Fit first."
+    from graticule import persist
+    from graticule.history import RunHistory
+
+    try:
+        path = persist.save_run(run)
+    except Exception as exc:  # noqa: BLE001 - save_run cleans up its temporary folder; the page only reports
+        return "error", f"Run {run.run_id} could not be saved: {first_line(str(exc)) or type(exc).__name__}"
+    try:
+        if getattr(run, "origin", "fitted") == "fitted":
+            RunHistory().record(run, saved_path=path)
+        else:
+            RunHistory().mark_saved(run.run_id, path)
+    except Exception as exc:  # noqa: BLE001 - the bundle is saved; the history line is secondary
+        st.session_state[HISTORY_ERROR] = f"The run history could not be updated ({type(exc).__name__}: {exc})."
+    note = unsaved_channel_note(run)
+    return "success", f"Saved run {run.run_id} to {path}." + (f" {note}" if note else "")
+
+
+@dataclass(frozen=True)
+class BundleLoadResult:
+    """What happened when a saved channel set was loaded at the Logbook.
+
+    ``kind`` is the tone of ``message`` (success when verified, warning when not verified because the libraries
+    changed, error when refused or when verification failed). ``verification`` is the verification sentence and
+    ``rows_note`` says whether the held-out rows were rebuilt (and why not, if they were not).
+    """
+
+    kind: NoticeKind
+    message: str
+    run_id: str | None = None
+    path: str | None = None
+    verified: bool = False
+    rebuilt: bool = False
+    verification: str = ""
+    rows_note: str = ""
+
+
+def loaded_info(run_id: str | None) -> BundleLoadResult | None:
+    """How run ``run_id`` was loaded from disk in this session, or None when it was not loaded here."""
+    if run_id is None:
+        return None
+    return st.session_state.get(LOADED, {}).get(run_id)
+
+
+ProgressFn = Callable[[str, float], None]
+
+
+def _sample_note(previous: "PreparedDataset | None", rebuilt: "PreparedDataset") -> str:
+    """What happened to the session's 01 Sample when a loaded run's sample was rebuilt."""
+    now = rebuilt.fingerprint[:12]
+    if previous is None:
+        return f" 01 Sample now holds this run's sample (fingerprint {now})."
+    if previous.fingerprint == rebuilt.fingerprint:
+        return f" 01 Sample already held this sample (fingerprint {now}); it was used as it is."
+    return (f" 01 Sample now holds this run's sample (fingerprint {now}); the sample drawn there before "
+            f"(fingerprint {previous.fingerprint[:12]}) was replaced.")
+
+
+def load_bundle_into_session(path: Path | str, progress: ProgressFn | None = None) -> BundleLoadResult:
+    """Load a saved channel set and make it this session's current run; returns what happened.
+
+    The bundle is checked and verified (:func:`graticule.persist.load_bundle`); a refused bundle changes nothing.
+    Its held-out rows are then rebuilt when possible: from the session's 01 Sample when it is the very sample the
+    run was fitted on, else a synthetic run is regenerated from its seed and a CIC-IDS2017 run is read from the
+    Bench's data folder (or the folder recorded with the run) when the files are there. When they are rebuilt, the
+    rebuilt sample also becomes the session's 01 Sample, so every station agrees on it, and the message says so
+    (and names the sample it replaced). The restored run (``origin="loaded"``) is stored like a fit; nothing is
+    refitted. ``progress`` receives (message, fraction done) at every stage: checking the files, reading and
+    cleaning the data files, building the matrices, and each channel reading the held-out rows.
+    """
+    from graticule import persist
+
+    def tell(message: str, fraction: float) -> None:
+        if progress is not None:
+            progress(message, min(max(float(fraction), 0.0), 1.0))
+
+    def within(start: float, span: float) -> ProgressFn:
+        return lambda message, fraction: tell(message, start + span * float(fraction))
+
+    folder = Path(path)
+    tell("Checking the files and re-reading the probe flows", 0.0)
+    try:
+        bundle = persist.load_bundle(folder)
+    except persist.BundleIntegrityError as exc:
+        return BundleLoadResult("error", f"Refused: {exc}", path=str(folder))
+    except Exception as exc:  # noqa: BLE001 - any unreadable bundle is reported, never raised into the page
+        return BundleLoadResult("error", f"The saved channel set {folder.name} could not be loaded: "
+                                         f"{first_line(str(exc)) or type(exc).__name__}", path=str(folder))
+    previous = get_prepared()
+    prepared = None
+    data = None
+    cache_note = ""
+    try:
+        if previous is not None and previous.fingerprint == bundle.manifest.get("dataset_fingerprint"):
+            prepared = previous
+        elif bundle.source == "synthetic":
+            prepared = persist.rebuild_prepared(bundle, data_dir=None, progress=within(0.08, 0.67))
+        else:
+            from ui import data_cache
+
+            resolution = resolve_data_dir(settings())
+            prepared = persist.rebuild_prepared(
+                bundle, data_dir=str(resolution.path) if resolution.path is not None else None,
+                read_file=data_cache.file_reader(), stage_file=data_cache.file_stager(),
+                progress=within(0.08, 0.67))
+            cache_note = (" The data files read stay in the app's memory for later draws; Release cached files at "
+                          "01 Sample frees them.")
+        tell("Building the training and test matrices", 0.78)
+        data = persist.rebuild_training_data(bundle, data_dir=None, prepared=prepared)
+        rows_note = (f"Held-out rows rebuilt: {len(data.y_test):,} test rows, identical to those the run was "
+                     "measured on (same rows, labels and feature values)." + _sample_note(previous, prepared)
+                     + cache_note)
+    except Exception as exc:  # noqa: BLE001 - RebuildError above all; the run loads without its rows either way
+        prepared = None
+        data = None
+        if bundle.source == "synthetic":
+            hint = "The synthetic sample could not be regenerated identically."
+        elif "differ" in str(exc):
+            hint = "The data files, or the way the program reads them, have changed since the run was saved."
+        else:
+            hint = "Set the data folder on the Bench, then load the set again."
+        rows_note = (f"Held-out rows not rebuilt: {exc} {hint} Scoring single flows and uploaded files still "
+                     "works; readings that need the held-out rows wait until then. 01 Sample is unchanged.")
+    run = persist.restore_run(bundle, data, progress=within(0.85, 0.15))
+    tell("Done", 1.0)
+    store_run(run)
+    if prepared is not None:
+        set_prepared(prepared)
+        mark_done("sample")
+    left_out = " ".join(persist.UNSAVED_CHANNELS.get(key, "") for key, result in run.channels.items()
+                        if result.status == persist.NOT_SAVED).strip()
+    if left_out:
+        rows_note += f" {left_out}"
+    report = bundle.verification
+    if report.verified:
+        kind: NoticeKind = "success"
+    elif report.version_mismatches:
+        kind = "warning"
+    else:
+        kind = "error"
+    message = f"Loaded run {run.run_id} from disk. {report.message} {rows_note}"
+    result = BundleLoadResult(kind, message, run_id=run.run_id, path=str(folder), verified=report.verified,
+                              rebuilt=data is not None, verification=report.message, rows_note=rows_note)
+    st.session_state.setdefault(LOADED, {})[run.run_id] = result
+    return result

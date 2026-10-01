@@ -489,11 +489,13 @@ def test_scoring_in_batches_matches_one_call(prepared: PreparedDataset,
                                               runs: dict[str, tuple[TrainingData, TrainingRun]],
                                               monkeypatch: pytest.MonkeyPatch) -> None:
     data, run = runs["multiclass"]
-    monkeypatch.setattr(train_mod, "SCORE_FIRST_BATCH", 50)
-    monkeypatch.setattr(train_mod, "SCORE_BATCH_SECONDS", 0.0)
+    monkeypatch.setattr(train_mod, "SCORE_BLOCK", 50)
     model = run.channels["forest"].estimator
-    proba, seconds = train_mod._score_in_batches("forest", model, data.X_test, None, None)
+    seen: list[tuple[int, int]] = []
+    proba, seconds = train_mod.score_in_blocks(model, data.X_test, after_block=lambda done, n: seen.append((done, n)))
     assert seconds > 0
+    n = len(data.X_test)
+    assert seen == [(min(stop, n), n) for stop in range(50, n + 50, 50)]  # fixed blocks of 50 rows
     # The forest sums its trees on several threads, so two whole calls can already differ in the last bit.
     np.testing.assert_allclose(proba, model.predict_proba(data.X_test), rtol=0, atol=1e-12)
 

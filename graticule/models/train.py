@@ -39,7 +39,7 @@ import time
 import traceback
 import warnings
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -90,7 +90,10 @@ from graticule.schema import DESTINATION_PORT, FEATURES, LABEL
 
 Mode = Literal["binary", "multiclass"]
 ConflictPolicy = Literal["keep", "majority", "drop"]
-ChannelStatus = Literal["ok", "failed", "cancelled", "skipped"]
+#: ``"not_saved"`` marks a channel of a run loaded from disk that was fitted but is never kept in saved sets
+#: (see :data:`graticule.persist.UNSAVED_CHANNELS`).
+ChannelStatus = Literal["ok", "failed", "cancelled", "skipped", "not_saved"]
+RunOrigin = Literal["fitted", "loaded"]
 
 #: Calls of :func:`fit_model` per channel key (one per channel fit). Tests read and reset it.
 FIT_CALLS: Counter[str] = Counter()
@@ -107,10 +110,10 @@ CALIBRATION_ROWS = 5_000
 #: Calibration rows each class gives at least (but never more than half of its training rows, so the SVM still
 #: sees the other half): a rare class's sigmoid then rests on a few dozen rows rather than on one or two.
 CALIBRATION_FLOOR = 20
-#: Test rows scored in the first batch; later batches are sized to take about SCORE_BATCH_SECONDS each, with a cancel
-#: check between batches.
-SCORE_FIRST_BATCH = 5_000
-SCORE_BATCH_SECONDS = 2.0
+#: Rows per block when test rows are scored (:func:`score_in_blocks`), with a cancel check between blocks. The
+#: blocks are fixed, so the fit and a run restored from disk call each model on exactly the same row ranges: a
+#: neural net's matrix products can round differently for another batch size, so equal blocks give equal readings.
+SCORE_BLOCK = 5_000
 #: Warnings left out of a channel's notes because they say nothing about its readings. The frozen SVM cannot take
 #: sample weights, so scikit-learn warns that the weights go to the calibration sigmoid only: that is the intent.
 QUIET_WARNINGS: tuple[str, ...] = ("does not appear to accept sample_weight",)
@@ -253,6 +256,10 @@ class TrainingRun:
 
     ``seconds`` covers the channel loop only (fitting, scoring, reference rows); the time spent building the
     matrices (including any Top-K ranking) is ``data.reports["seconds"]``, and :attr:`total_seconds` adds both.
+
+    ``origin`` is ``"fitted"`` for a run fitted in this process and ``"loaded"`` for one restored from a saved
+    bundle (:func:`graticule.persist.restore_run`); ``bundle_path`` is the folder the run was saved to or loaded
+    from (None while unsaved). A loaded run may come without its held-out rows (see :attr:`has_test_rows`).
     """
 
     run_id: str
@@ -265,6 +272,13 @@ class TrainingRun:
     seconds: float
     reference_sample: np.ndarray
     feature_quantiles: np.ndarray
+    origin: RunOrigin = "fitted"
+    bundle_path: str | None = None
+
+    @property
+    def has_test_rows(self) -> bool:
+        """True when the held-out rows are in memory (False for a bundle loaded without its data folder)."""
+        return len(self.data.y_test) > 0
 
     def ok_channels(self) -> list[str]:
         """Keys of the channels that were fitted successfully, in channel order."""
@@ -461,12 +475,17 @@ def build_training_data(
     *,
     progress: ProgressSink | None = None,
     cancel: CancelToken | None = None,
+    ranking: Sequence[tuple[str, float]] | None = None,
 ) -> TrainingData:
     """Build the training and test matrices for ``request`` (see the module notes for the order of work).
 
     Raises :class:`~graticule.data.sampling.SingleClassError` with a message for the user when fewer than two
     classes remain (for example BENIGN-only data in binary mode). ``progress`` receives stage updates under
     ``STAGE_KEY``; ``cancel`` is checked between steps.
+
+    ``ranking`` (Top-K only) is a feature ranking recorded by an earlier build of the very same matrices (a saved
+    run's ``feature_choice.ranking``): it is used as it is instead of ranking the features again, so rebuilding a
+    saved run fits no ranking model. Callers must still check that the columns and rows come out as recorded.
     """
     started = time.perf_counter()
     frame = prepared.frame
@@ -544,19 +563,24 @@ def build_training_data(
     overlap: dict[str, Any] | None = None
     if topk:
         max_rows = TOPK_MAX_ROWS.get(request.mode, 50_000)
-        label = f"Ranking {len(ranked)} features on up to {min(max_rows, len(train_rows)):,} training rows"
-        _notify(progress, STAGE_KEY, status=stage, fraction=0.3, message=label)
-        mark = time.perf_counter()
-        hook_id = register_hooks(progress, cancel)
-        reporter = _RoundReporter(hook_id, STAGE_KEY, RANK_ROUNDS, start=0.3, span=0.55, label=label)
-        try:
-            ranking = rank_features(_matrix(frame, ranked, train_rows), y_train, ranked, seed=int(request.seed),
-                                    max_rows=max_rows, callbacks=[reporter])
-        finally:
-            release_hooks(hook_id)
-        rank_seconds = time.perf_counter() - mark
-        if reporter.cancelled:
-            raise TrainingCancelled("The fit was cancelled while the features were being ranked.")
+        reused = ranking is not None
+        if ranking is not None:
+            ranking = [(str(name), float(score)) for name, score in ranking]
+            rank_seconds = 0.0
+        else:
+            label = f"Ranking {len(ranked)} features on up to {min(max_rows, len(train_rows)):,} training rows"
+            _notify(progress, STAGE_KEY, status=stage, fraction=0.3, message=label)
+            mark = time.perf_counter()
+            hook_id = register_hooks(progress, cancel)
+            reporter = _RoundReporter(hook_id, STAGE_KEY, RANK_ROUNDS, start=0.3, span=0.55, label=label)
+            try:
+                ranking = rank_features(_matrix(frame, ranked, train_rows), y_train, ranked,
+                                        seed=int(request.seed), max_rows=max_rows, callbacks=[reporter])
+            finally:
+                release_hooks(hook_id)
+            rank_seconds = time.perf_counter() - mark
+            if reporter.cancelled:
+                raise TrainingCancelled("The fit was cancelled while the features were being ranked.")
         _check(cancel)
         choice = select_features("topk", degenerate=degenerate, include_port=request.include_port, ranking=ranking,
                                  k=int(request.top_k))
@@ -573,6 +597,7 @@ def build_training_data(
             "port_added": DESTINATION_PORT in choice.columns,
             "ranked_on_rows": int(min(max_rows, len(train_rows))),
             "ranking_seconds": round(rank_seconds, 3),
+            "ranking_reused": reused,
             "test_rows": int(len(test_rows)),
             "test_rows_seen_in_train": int(seen.sum()),
             "share": float(seen.mean()) if len(seen) else 0.0,
@@ -910,34 +935,47 @@ def fit_model(
     return fitted, info
 
 
-def _score_in_batches(key: str, model: Any, X: np.ndarray, progress: ProgressSink | None,
-                      cancel: CancelToken | None) -> tuple[np.ndarray, float]:
-    """``model.predict_proba(X)`` in batches with a cancel check before each; returns (probabilities, seconds).
+def score_in_blocks(
+    model: Any,
+    X: np.ndarray,
+    *,
+    cancel: CancelToken | None = None,
+    after_block: Callable[[int, int], None] | None = None,
+) -> tuple[np.ndarray, float]:
+    """``model.predict_proba(X)`` in fixed blocks of :data:`SCORE_BLOCK` rows; returns (probabilities, seconds).
 
-    The first batch holds :data:`SCORE_FIRST_BATCH` rows; later ones are sized from the speed measured so far to
-    take about :data:`SCORE_BATCH_SECONDS` each, so a fast model scores in a few large calls and a slow one (the
-    kernel SVM) stays interruptible. The seconds count prediction calls only.
+    ``cancel`` is checked before each block (raising :class:`TrainingCancelled`), so even the kernel SVM stays
+    interruptible, and ``after_block`` receives (rows scored so far, rows in all) after each one. The block
+    boundaries depend on nothing but the number of rows, so whoever scores the same rows this way (the fit, or a
+    run restored from disk) gets the very same numbers. The seconds count prediction calls only.
     """
     n = len(X)
+    block = max(int(SCORE_BLOCK), 1)
     parts: list[np.ndarray] = []
     spent = 0.0
-    start, size = 0, SCORE_FIRST_BATCH
-    _notify(progress, key, fraction=0.98, message=f"Scoring {n:,} test rows")
-    while start < n:
+    for start in range(0, n, block):
         _check(cancel)
-        stop = min(n, start + size)
+        stop = min(n, start + block)
         mark = time.perf_counter()
         parts.append(np.asarray(model.predict_proba(X[start:stop])))
-        took = time.perf_counter() - mark
-        spent += took
-        rate = (stop - start) / max(took, 1e-6)
-        size = int(min(max(rate * SCORE_BATCH_SECONDS, SCORE_FIRST_BATCH), 1_000_000))
-        start = stop
-        if start < n:
-            _notify(progress, key, message=f"Scoring the test rows: {start:,} of {n:,}")
+        spent += time.perf_counter() - mark
+        if after_block is not None:
+            after_block(stop, n)
     if not parts:
         return np.asarray(model.predict_proba(X)), spent
     return (parts[0] if len(parts) == 1 else np.vstack(parts)), spent
+
+
+def _score_in_batches(key: str, model: Any, X: np.ndarray, progress: ProgressSink | None,
+                      cancel: CancelToken | None) -> tuple[np.ndarray, float]:
+    """Score the test rows for channel ``key`` (:func:`score_in_blocks`), reporting progress between blocks."""
+    _notify(progress, key, fraction=0.98, message=f"Scoring {len(X):,} test rows")
+
+    def report(done: int, total: int) -> None:
+        if done < total:
+            _notify(progress, key, message=f"Scoring the test rows: {done:,} of {total:,}")
+
+    return score_in_blocks(model, X, cancel=cancel, after_block=report)
 
 
 def _train_channel(key: str, data: TrainingData, request: TrainRequest, ctx: BuildContext,

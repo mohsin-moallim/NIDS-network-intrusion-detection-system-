@@ -1,6 +1,7 @@
 """Checks against the real CIC-IDS2017 files (skipped when the folder is not available).
 
-Kept quick: headers are checked on the first rows only, and the full procedure runs on single files.
+Kept quick: headers are checked on the first rows only, and the full procedure runs on single files. The two tests
+that read a whole large file are also marked ``slow``, so the default run stays short; ``-m realdata`` runs them.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ def test_thursday_web_attack_labels_are_normalised(real_data_dir: Path) -> None:
     assert not frame[LABEL].str.contains("�").any()
 
 
+@pytest.mark.slow  # reads the whole 215 MB Wednesday file three times (about 10 s)
 def test_wednesday_prepares_and_reconciles(real_data_dir: Path) -> None:
     _path(real_data_dir, WEDNESDAY)
     reads: dict[str, tuple[pd.DataFrame, FileReadReport]] = {}
@@ -93,6 +95,7 @@ def test_wednesday_prepares_and_reconciles(real_data_dir: Path) -> None:
     assert np.isfinite(rebuilt.frame["Flow Packets/s"].to_numpy()).all()
 
 
+@pytest.mark.slow  # reads the whole Monday file (about 3 s)
 def test_monday_alone_cannot_train_a_binary_detector(real_data_dir: Path) -> None:
     _path(real_data_dir, MONDAY)
     ds = prepare_dataset(DataRequest(source="cicids", data_dir=str(real_data_dir), files=(MONDAY,),

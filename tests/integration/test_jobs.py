@@ -24,7 +24,10 @@ from graticule.models.jobs import (
     JobSnapshot,
     TrainingCancelled,
     TrainingJob,
+    claim_slot,
     get_job,
+    release_slot,
+    slot_holder,
     sync_training_requested,
     thread_warnings,
 )
@@ -177,6 +180,51 @@ def test_only_one_job_runs_at_a_time(prepared: PreparedDataset, cleanup: list[Tr
     assert second.wait(WAIT) and second.state == "done"
     with pytest.raises(RuntimeError):
         second.start()
+
+
+def test_a_fit_waits_for_no_measurement_holding_the_work_slot(prepared: PreparedDataset) -> None:
+    """The work slot is shared with the fitting measurements of 03 Measure: while one holds it, a fit is turned
+    away with a message naming it; once it is given back, the fit runs and holds the slot itself."""
+    assert slot_holder() is None
+    assert claim_slot("a cross-validation")
+    try:
+        assert slot_holder() == "a cross-validation" and not claim_slot("another")
+        job = TrainingJob(prepared, REQUEST)
+        with pytest.raises(JobBusyError, match="A cross-validation is running"):
+            job.run_inline()
+        assert job.state == "queued"
+    finally:
+        release_slot()
+    assert slot_holder() is None
+    seen: list[str | None] = []
+    job = TrainingJob(prepared, REQUEST, on_finished=lambda run: seen.append(slot_holder()))
+    job.run_inline()
+    assert seen == ["a fit"] and slot_holder() is None
+
+
+def test_the_finish_hook_sees_every_fitted_run_and_never_fails_the_job(prepared: PreparedDataset,
+                                                                       cleanup: list[TrainingJob]) -> None:
+    """The hook runs on the job's thread as soon as a run with a fitted channel exists (the UI records the run
+    history there, so a fit that no page adopts is still recorded); an error in it is kept, never raised."""
+    finished = threading.Event()
+    seen: list[TrainingRun] = []
+
+    def hook(run: TrainingRun) -> None:
+        seen.append(run)
+        finished.set()
+
+    job = TrainingJob(prepared, REQUEST, on_finished=hook)
+    cleanup.append(job)
+    job.start()
+    assert job.wait(WAIT) and finished.is_set()
+    assert seen == [job.result] and job.hook_error is None and job.state == "done"
+
+    def broken(run: TrainingRun) -> None:
+        raise OSError("disk full")
+
+    failing = TrainingJob(prepared, REQUEST, on_finished=broken)
+    run = failing.run_inline()
+    assert failing.state == "done" and run.ok_channels() and failing.hook_error == "OSError: disk full"
 
 
 def test_inline_run_matches_the_threaded_run(prepared: PreparedDataset, cleanup: list[TrainingJob]) -> None:

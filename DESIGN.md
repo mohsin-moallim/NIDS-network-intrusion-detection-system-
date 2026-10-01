@@ -170,3 +170,37 @@ findings fixed.
   that the fit counter and the stored run object are unchanged.
 - **Honest readings.** The page warns when the loaded sample differs from the one the run was fitted on; scores are shown
   to four decimals so 0.9995 is never rounded up to a perfect 1.000; the fit time includes building the matrices.
+
+## Phases 4–5 — saved channel sets, run history, Logbook; evaluation and 03 Measure (2026-10-01)
+Built concurrently by two implementers, integrated, reviewed through three lenses; 32 verified findings handled.
+- **Saved channel sets** (`saved_models/<run id>/`, git-ignored): a manifest (features, mode, classes, metrics, data source,
+  row counts, timestamp, library versions, the fit and sample settings), the models (scikit-learn pipelines with joblib;
+  XGBoost in its own `.ubj` format), 512 *synthetic* probe flows drawn from per-feature training quantiles together with
+  every channel's readings of them, and the quantiles. Every file — and the manifest itself — carries a SHA-256 checksum;
+  a changed byte is refused.
+- **"Predicts identically" is checked on every load**: each channel re-reads the probe flows and must reproduce its saved
+  labels and probabilities exactly (`array_equal`, forests on one thread). The set is *verified* only when the library
+  versions (Python, numpy, pandas, scikit-learn, scipy, xgboost, joblib) also match; otherwise the differences are listed.
+  Measured after a full server restart: "Verified: all 4 channels reproduced their saved probe readings exactly."
+- **Held-out rows after a restart** are rebuilt from the data folder with the recorded settings and seed, then checked row
+  by row, label by label and value by value against digests in the manifest. On the Thursday web-attack run the rebuilt
+  38,562 test rows matched, and 03 Measure showed the same readings as before the restart (CH2 XGBoost 0.7439).
+- **CH3 (kernel SVM) is not written to saved sets.** A kernel SVM *is* a set of training rows (its support vectors,
+  standardised), and the brief asks that no dataset rows be copied into the project. Its readings are kept in the manifest
+  and the Logbook says so plainly; refit it at 02 Fit when needed. *(Pending the owner's confirmation; an opt-in to save it
+  anyway would be easy to add.)*
+- **No dataset rows on disk** otherwise: probes are synthetic, quantiles are summary statistics, and the training reference
+  sample used for explanations is never written.
+- **Run history** lives in SQLite (`run_history/runs.sqlite3`, git-ignored), recorded from the fit job itself so even a fit
+  that no page picks up is logged; it survives restarts and downloads as CSV.
+- **One run type everywhere.** A loaded set becomes an ordinary run (`origin = "loaded"`), so every station works the same;
+  when its held-out rows cannot be rebuilt the stations say why instead of failing.
+- **03 Measure**: a leaderboard sorted by balanced accuracy with the gap to the best channel, a dot plot of every metric
+  (accuracy, balanced accuracy, precision/recall/F1 macro and weighted, ROC-AUC, average precision), the held-out class mix,
+  confusion matrices for every channel (row % or counts; each keeps its size and scrolls in narrow columns), ROC and
+  precision-recall curves (all channels overlaid for binary, one-vs-rest per class for multi-class), built-in and on-demand
+  permutation importance, timing (fit seconds, flows per second, single-flow latency), and cross-validation on demand
+  (stratified folds over at most 50,000 training rows, with a time estimate and Cancel). Evaluations are computed once per
+  run and kept; only the two explicit buttons ever fit anything, and they share one work slot with 02 Fit.
+- **Test suite**: ~100 s by default (421 tests); whole-file real-data checks and the 200k benchmarks run with `-m realdata`
+  or `-m slow`.

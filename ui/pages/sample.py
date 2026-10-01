@@ -335,9 +335,11 @@ def _sample_sheet(dataset: PreparedDataset) -> None:
         else:
             st.caption("The data fit within the budget, so every row was kept.")
     with right:
-        chart = viz.class_distribution_chart(dataset.sampling.before, dataset.sampling.after,
-                                             components.current_mode())
-        st.altair_chart(chart, width="stretch", theme=None)
+        # Drawn from the spec without Altair's schema checks (see viz.chart_spec): this sheet is redrawn on every
+        # rerun of the station, and the checks cost more than the drawing.
+        spec = viz.chart_spec(lambda: viz.class_distribution_chart(
+            dataset.sampling.before, dataset.sampling.after, components.current_mode()))
+        st.vega_lite_chart(spec=spec, width="stretch", theme=None)
     st.markdown("**Sources**")
     _file_table(dataset)
     _notes(dataset)

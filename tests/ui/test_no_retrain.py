@@ -3,32 +3,43 @@
 The test draws a small synthetic sample through 01 Sample, fits all five channels once through the 02 Fit form
 (``profile="test"`` models) and checks the readings, including the CH3 row-cap badge. It then changes every widget
 on the Fit page without submitting, visits every other station and changes each of its widgets in turn (rerunning
-after every change), and finally comes back to 02 Fit. Throughout, ``graticule.models.train.FIT_CALLS`` must not
-move, neither the training matrices nor a training job may be built again, ``prepare_dataset`` must not run again,
-and the stored run and every fitted estimator must stay the very same objects. Buttons are never pressed (pressing
-one is an explicit action), and widgets are found generically, so stations built in later phases are covered as
-soon as they exist.
+after every change), and comes back to 02 Fit. Throughout, ``graticule.models.train.FIT_CALLS`` must not move,
+neither the training matrices nor a training job may be built again, ``prepare_dataset`` must not run again, and
+the stored run and every fitted estimator must stay the very same objects. Widgets are found generically, so
+stations built in later phases are covered as soon as they exist; 03 Measure and the Logbook are checked by name.
+
+Buttons are explicit actions and are not pressed while widgets are changed. Save at the Logbook is pressed at the
+end, because it must not fit anything either (the run stays the very same object); a second saved set then gives
+the Logbook's picker something to change to. Loading a saved set and working 03 Measure on the loaded run are
+covered by ``tests/ui/test_saved_runs_measure.py``.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import replace
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import graticule.settings as settings_mod
+from graticule import persist
 from graticule.data import prepare
 from graticule.models import train
 from graticule.models.zoo import MODEL_KEYS
-from tests.ui.harness import draw_synthetic_sample, errors, fresh_caches, goto, new_app  # noqa: F401
+from tests.ui.harness import (  # noqa: F401
+    draw_synthetic_sample,
+    errors,
+    fresh_caches,
+    goto,
+    new_app,
+    touch_every_widget,
+)
 from ui import state, training_ui
 from ui.stations import ALL_STATIONS
 
 pytestmark = pytest.mark.ui
-# Element-tree attributes of the widget kinds this test knows how to change.
-WIDGET_KINDS: tuple[str, ...] = ("checkbox", "toggle", "radio", "selectbox", "multiselect", "number_input", "slider",
-                                 "select_slider", "text_input", "text_area")
 # What one press of Fit builds: the matrices once, the fit loop once, one job.
 ONE_FIT = Counter(build_training_data=1, train_all=1, TrainingJob=1)
 
@@ -69,71 +80,16 @@ def training_calls(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     return calls
 
 
-def _different_value(widget: object, kind: str) -> object | None:
-    """A valid value for ``widget`` that differs from its current one, or None when there is none."""
-    value = widget.value  # type: ignore[attr-defined]
-    if kind in ("checkbox", "toggle"):
-        return not value
-    if kind in ("radio", "selectbox", "select_slider"):
-        options = list(widget.options)  # type: ignore[attr-defined]
-        if len(options) < 2 or isinstance(value, (list, tuple)):
-            return None
-        current = widget.format_func(value) if value is not None else None  # type: ignore[attr-defined]
-        return next((o for o in options if o != current), None)
-    if kind == "multiselect":
-        if value:
-            return list(value)[:-1]
-        options = list(widget.options)  # type: ignore[attr-defined]
-        return [options[0]] if options else None
-    if kind in ("number_input", "slider"):
-        if isinstance(value, (list, tuple)) or value is None:
-            return None
-        step = widget.step or 1  # type: ignore[attr-defined]
-        high, low = widget.max, widget.min  # type: ignore[attr-defined]
-        candidate = value + step
-        if high is not None and candidate > high:
-            candidate = value - step
-        if low is not None and candidate < low:
-            return None
-        return round(candidate, 6) if isinstance(candidate, float) else candidate
-    if kind in ("text_input", "text_area"):
-        return f"{value or ''}x"
-    return None
-
-
-def touch_every_widget(at: AppTest, after_each: Callable[[str], None]) -> list[str]:
-    """Change each widget on the current page once, rerunning after each change; returns what was touched.
-
-    Widgets are addressed by kind and position, re-read after every rerun, so the page may redraw freely.
-    """
-    touched: list[str] = []
-    counts = {kind: len(getattr(at, kind)) for kind in WIDGET_KINDS}
-    for kind, count in counts.items():
-        for index in range(count):
-            widgets = getattr(at, kind)
-            if index >= len(widgets):
-                break
-            widget = widgets[index]
-            if getattr(widget.proto, "disabled", False):
-                continue  # a viewer cannot change it either
-            new = _different_value(widget, kind)
-            if new is None:
-                continue
-            widget.set_value(new)
-            at.run()
-            label = f"{kind}:{widget.key or getattr(widget, 'label', index)}"
-            assert not errors(at), (label, errors(at))
-            touched.append(label)
-            after_each(label)
-    return touched
-
-
 def _markdown(at: AppTest) -> str:
     return " ".join(m.value for m in at.markdown)
 
 
 def _readings(at: AppTest):  # noqa: ANN202 - a pandas frame from the element tree
     return next(d.value for d in at.dataframe if "Balanced accuracy" in d.value.columns)
+
+
+def _keys(touched: list[str]) -> set[str]:
+    return {label.split(":", 1)[1] for label in touched}
 
 
 def test_no_widget_anywhere_refits_or_reprepares(fresh_caches: None, prepare_calls: list[prepare.DataRequest],
@@ -176,8 +132,7 @@ def test_no_widget_anywhere_refits_or_reprepares(fresh_caches: None, prepare_cal
         assert state.JOB_ID not in at.session_state, f"{label} started a fit job"
 
     # 1. Every widget of the Fit form, changed without pressing Fit.
-    fit_touched = touch_every_widget(at, unchanged)
-    fit_keys = {label.split(":", 1)[1] for label in fit_touched}
+    fit_keys = _keys(touch_every_widget(at, unchanged))
     assert {"fit_mode", "fit_features", "fit_k", "fit_port", "fit_channels", "fit_balanced", "fit_min_rows",
             "fit_svm_cap", "fit_test_share"} <= fit_keys
 
@@ -191,6 +146,9 @@ def test_no_widget_anywhere_refits_or_reprepares(fresh_caches: None, prepare_cal
         unchanged(f"visiting {station.key}")
         touched_elsewhere[station.key] = touch_every_widget(at, unchanged)
     assert touched_elsewhere["sample"] and touched_elsewhere["bench"]
+    # 03 Measure: the confusion and ROC views, the detail channel, the folds and channels of cross-validation.
+    assert {"ms_cm_show", "ms_roc_zoom", f"ms_detail_channel-{run_id}", "ms_cv_k",
+            f"ms_cv_channels-{run_id}"} <= _keys(touched_elsewhere["measure"])
 
     # 3. Back at 02 Fit: the same run, read from memory, with the same readings and the CH3 badge.
     goto(at, "fit")
@@ -200,3 +158,15 @@ def test_no_widget_anywhere_refits_or_reprepares(fresh_caches: None, prepare_cal
     assert badge in _markdown(at)
     assert "nothing refits until you press Fit again" in _markdown(at)
     assert id(state.run_registry().get(run_id)) == run_identity
+
+    # 4. The Logbook with saved sets. Save writes the run (the very same object stays current); a second saved set
+    # (a copy of the run under another id) gives the picker something to change to.
+    goto(at, "logbook")
+    at.button(key="lb_save").click().run()
+    assert not errors(at), errors(at)
+    unchanged("saving at the Logbook")
+    assert (settings_mod.MODELS_DIR / run_id / "manifest.json").is_file()
+    persist.save_run(replace(run, run_id=f"{run_id}-copy", bundle_path=None))
+    goto(at, "logbook")
+    assert "selectbox:lb_pick" in touch_every_widget(at, unchanged)
+    # Loading a saved set and every Measure control on the loaded run: tests/ui/test_saved_runs_measure.py.

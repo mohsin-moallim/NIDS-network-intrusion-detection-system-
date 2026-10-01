@@ -8,13 +8,16 @@ exactly as when a viewer clicks through the stepper.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 STATION = "_station"
+# Element-tree attributes of the widget kinds :func:`touch_every_widget` knows how to change.
+WIDGET_KINDS: tuple[str, ...] = ("checkbox", "toggle", "radio", "selectbox", "multiselect", "number_input", "slider",
+                                 "select_slider", "text_input", "text_area")
 
 
 def station_app(key: str) -> None:
@@ -43,11 +46,79 @@ def errors(at: AppTest) -> list[str]:
 
 
 def draw_synthetic_sample(at: AppTest, flows: int = 2_000, budget: int = 1_600) -> AppTest:
-    """Draw a small synthetic sample through the 01 Sample form (no data folder is configured in tests)."""
+    """Draw a small synthetic sample through the 01 Sample form (no data folder is configured in tests).
+
+    The values must lie within the inputs' limits: Streamlit drops a value out of range and keeps the default (40,000
+    generated flows), which would quietly make every such test far slower.
+    """
     goto(at, "sample")
-    at.number_input(key="smp_syn_flows").set_value(flows)
-    at.number_input(key="smp_syn_budget").set_value(budget)
+    for key, value in (("smp_syn_flows", flows), ("smp_syn_budget", budget)):
+        widget = at.number_input(key=key)
+        if not widget.min <= value <= widget.max:
+            raise ValueError(f"{key}={value:,} is outside {widget.min:,}..{widget.max:,}")
+        widget.set_value(value)
     return at.button(key="smp_syn_draw").click().run()
+
+
+def different_value(widget: object, kind: str) -> object | None:
+    """A valid value for ``widget`` that differs from its current one, or None when there is none."""
+    value = widget.value  # type: ignore[attr-defined]
+    if kind in ("checkbox", "toggle"):
+        return not value
+    if kind in ("radio", "selectbox", "select_slider"):
+        options = list(widget.options)  # type: ignore[attr-defined]
+        if len(options) < 2 or isinstance(value, (list, tuple)):
+            return None
+        current = widget.format_func(value) if value is not None else None  # type: ignore[attr-defined]
+        return next((o for o in options if o != current), None)
+    if kind == "multiselect":
+        if value:
+            return list(value)[:-1]
+        options = list(widget.options)  # type: ignore[attr-defined]
+        return [options[0]] if options else None
+    if kind in ("number_input", "slider"):
+        if isinstance(value, (list, tuple)) or value is None:
+            return None
+        step = widget.step or 1  # type: ignore[attr-defined]
+        high, low = widget.max, widget.min  # type: ignore[attr-defined]
+        candidate = value + step
+        if high is not None and candidate > high:
+            candidate = value - step
+        if low is not None and candidate < low:
+            return None
+        return round(candidate, 6) if isinstance(candidate, float) else candidate
+    if kind in ("text_input", "text_area"):
+        return f"{value or ''}x"
+    return None
+
+
+def touch_every_widget(at: AppTest, after_each: Callable[[str], None]) -> list[str]:
+    """Change each widget on the current page once, rerunning after each change; returns what was touched
+    (``"kind:key"`` labels). Buttons are never pressed.
+
+    Widgets are addressed by kind and position, re-read after every rerun, so the page may redraw freely. Disabled
+    widgets are skipped (a viewer cannot change them either). The run must stay free of exceptions.
+    """
+    touched: list[str] = []
+    counts = {kind: len(getattr(at, kind)) for kind in WIDGET_KINDS}
+    for kind, count in counts.items():
+        for index in range(count):
+            widgets = getattr(at, kind)
+            if index >= len(widgets):
+                break
+            widget = widgets[index]
+            if getattr(widget.proto, "disabled", False):
+                continue
+            new = different_value(widget, kind)
+            if new is None:
+                continue
+            widget.set_value(new)
+            at.run()
+            label = f"{kind}:{widget.key or getattr(widget, 'label', index)}"
+            assert not errors(at), (label, errors(at))
+            touched.append(label)
+            after_each(label)
+    return touched
 
 
 @pytest.fixture
