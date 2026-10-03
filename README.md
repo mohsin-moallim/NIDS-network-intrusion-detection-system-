@@ -210,3 +210,8 @@ streamlit run nids_app.py
 
 ---
 
+## *📝 Credits & License*
+
+*This repository is adapted by **Muhsin Mohamed Ahmed** (2026) from [Network-Intrusion-Detection](https://github.com/Jarvis1337/Network-Intrusion-Detection), created by [~Jarvis (Jarvis1337)](https://github.com/Jarvis1337).*
+
+> *Network-Intrusion-Detection (NIDS) © 2026 by ~Jarvis is licensed under the GNU General Public License v3.0 and Attribution 4.0 International. This adapted version is shared under the same terms — see [LICENSE](LICENSE).*
