@@ -77,7 +77,7 @@ New entries are added as the build moves through its phases. Dates are ISO (YYYY
 
 ### Process
 - Built phase by phase; each phase ends with the app running, `pytest` passing, this file updated and one commit.
-- Commits use the owner's git identity. Nothing is pushed to any remote.
+- Commits use the owner's git identity. Published by the owner to <https://github.com/mohsin-moallim/graticule>.
 
 ## Phase 0 — environment and skeleton (2026-10-01)
 Measured on the target laptop (i5-8365U, 16 GB, Windows 11, Python 3.13):
