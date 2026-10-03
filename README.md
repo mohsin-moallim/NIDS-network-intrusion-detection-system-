@@ -35,7 +35,7 @@
 *Your project directory should look like this:*
 
 ```
-Network-Intrusion-Detection/
+NIDS-network-intrusion-detection-system-/
 │
 ├── nids_app.py               # Main Streamlit application
 ├── requirements.txt          # Python dependencies
@@ -60,8 +60,8 @@ Network-Intrusion-Detection/
 *First, clone the project repository from GitHub to your local machine and navigate into the project directory.*
 
 ```bash
-git clone https://github.com/Jarvis1337/Network-Intrusion-Detection.git
-cd Network-Intrusion-Detection
+git clone https://github.com/mohsin-moallim/NIDS-network-intrusion-detection-system-.git
+cd NIDS-network-intrusion-detection-system-
 ```
 
 ### *2. Download Dataset (Optional)*
