@@ -24,6 +24,19 @@ def flows() -> pd.DataFrame:
     return generate(12_000, seed=11, blur=0.1)
 
 
+@pytest.fixture(scope="module")
+def pure_flows() -> pd.DataFrame:
+    """A sample without blur, so every profile shows exactly as described (generated once for the module)."""
+    return generate(6_000, seed=21, blur=0.0)
+
+
+@pytest.fixture(scope="module")
+def large_flows() -> pd.DataFrame:
+    """40,000 flows at the default attack share (0.35) and blur, for the checks that count rare things or shares
+    (generated once for the module)."""
+    return generate(40_000, seed=42)
+
+
 def _f64(frame: pd.DataFrame, column: str) -> np.ndarray:
     return frame[column].to_numpy(dtype=np.float64)
 
@@ -47,9 +60,8 @@ def test_same_arguments_give_identical_frames() -> None:
     assert not first.equals(generate(3_000, seed=5, blur=0.3))
 
 
-def test_labels_and_attack_share() -> None:
-    frame = generate(20_000, seed=3, attack_share=0.35)
-    labels = frame[schema.LABEL]
+def test_labels_and_attack_share(large_flows: pd.DataFrame) -> None:
+    labels = large_flows[schema.LABEL]
     assert set(labels.unique()) == set(synthetic.SYNTHETIC_CLASSES)
     share = float((labels != schema.BENIGN).mean())
     assert abs(share - 0.35) <= 0.03
@@ -170,10 +182,10 @@ def test_iat_totals_fit_inside_the_flow(flows: pd.DataFrame) -> None:
     assert packets.min() >= 2 and _f64(flows, "Total Fwd Packets").min() >= 1
 
 
-def test_every_flow_has_two_packets_and_zero_duration_stays_rare() -> None:
+def test_every_flow_has_two_packets_and_zero_duration_stays_rare(large_flows: pd.DataFrame) -> None:
     """Like the recorded files: no single-packet flows, and zero-duration flows about one in a thousand, so the
     default drop strategy does not thin out any class."""
-    frame = generate(40_000, seed=42)
+    frame = large_flows
     packets = _f64(frame, "Total Fwd Packets") + _f64(frame, "Total Backward Packets")
     assert packets.min() >= 2
     instant = _f64(frame, "Flow Duration") == 0
@@ -184,8 +196,8 @@ def test_every_flow_has_two_packets_and_zero_duration_stays_rare() -> None:
     assert all(by_class.get(name, 0) <= 0.02 * totals[name] for name in totals.index), by_class.to_dict()
 
 
-def test_unanswered_probes_and_queries_are_retried() -> None:
-    pure = generate(6_000, seed=21, blur=0.0)
+def test_unanswered_probes_and_queries_are_retried(pure_flows: pd.DataFrame) -> None:
+    pure = pure_flows
     sweep = pure[pure[schema.LABEL] == "Sweep"]
     silent = sweep["Total Backward Packets"] == 0
     assert silent.any()
@@ -339,8 +351,8 @@ def test_meter_rejects_malformed_tables() -> None:
 # ------------------------------------------------------------------ profile realism
 
 
-def test_profiles_look_like_their_descriptions() -> None:
-    pure = generate(6_000, seed=21, blur=0.0)
+def test_profiles_look_like_their_descriptions(pure_flows: pd.DataFrame) -> None:
+    pure = pure_flows
     by = pure.groupby(schema.LABEL, observed=True)
     duration = by["Flow Duration"].median()
     assert 60e6 * 0.8 <= duration["Slow Drip"] <= 120e6 * 1.1

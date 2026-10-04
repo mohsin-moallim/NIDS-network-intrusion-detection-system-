@@ -32,7 +32,7 @@ from graticule.schema import FEATURE_SET, LABEL
 
 if TYPE_CHECKING:
     from graticule.data.prepare import PreparedDataset
-    from graticule.evaluate import ChannelEvaluation
+    from graticule.evaluate import ChannelEvaluation, TrafficEvaluation
     from graticule.history import RunHistory
     from graticule.models.train import TrainingRun
 
@@ -105,6 +105,21 @@ def consensus_metrics(run: "TrainingRun", keys: Sequence[str] | None = None) -> 
     :func:`graticule.evaluate.classification_metrics` plus ``voters`` (channels combined) and ``unanimous`` (share
     of held-out rows on which every channel read the consensus class).
     """
+    found = _combined(run, keys)
+    if found is None:
+        return None
+    combined, channels = found
+    out: dict[str, Any] = evaluate.classification_metrics(run.data.y_test, combined.label_index, combined.proba,
+                                                          len(run.data.classes))
+    out["voters"] = combined.voters
+    out["unanimous"] = float(np.mean(combined.agreement == combined.voters))
+    out["channels"] = channels
+    return out
+
+
+def _combined(run: "TrainingRun", keys: Sequence[str] | None) -> tuple[Any, list[str]] | None:
+    """The combined verdict of the chosen channels on the held-out rows and the channels in it, or None with fewer
+    than two channels holding stored probabilities (or no held-out rows)."""
     if not evaluate.has_test_rows(run):
         return None
     wanted = _ordered_keys(list(keys) if keys is not None else list(run.ok_channels()))
@@ -115,12 +130,28 @@ def consensus_metrics(run: "TrainingRun", keys: Sequence[str] | None = None) -> 
             probas[key] = scores[0]
     if len(probas) < 2:
         return None
-    combined = verdict.combine(probas)
-    out: dict[str, Any] = evaluate.classification_metrics(run.data.y_test, combined.label_index, combined.proba,
-                                                          len(run.data.classes))
+    return verdict.combine(probas), list(probas)
+
+
+def consensus_traffic_metrics(run: "TrainingRun", keys: Sequence[str] | None = None) -> dict[str, Any] | None:
+    """The combined verdict's readings weighted to the recorded traffic (see
+    :func:`graticule.evaluate.traffic_weights`): the keys of
+    :func:`graticule.evaluate.weighted_classification_metrics` plus ``voters``, ``flows`` (the summed weight),
+    ``errors`` (:func:`graticule.evaluate.weighted_standard_errors`) and ``bounds`` (the heavy-flow ranges of
+    :func:`graticule.evaluate.heavy_flow_bounds`, empty when the run does not record them). None when the run has no
+    traffic weights or fewer than two channels with stored probabilities."""
+    weights = evaluate.traffic_weights(run)
+    found = _combined(run, keys) if weights is not None else None
+    if weights is None or found is None:
+        return None
+    combined, channels = found
+    out: dict[str, Any] = evaluate.weighted_classification_metrics(
+        run.data.y_test, combined.label_index, combined.proba, len(run.data.classes), weights)
     out["voters"] = combined.voters
-    out["unanimous"] = float(np.mean(combined.agreement == combined.voters))
-    out["channels"] = list(probas)
+    out["flows"] = float(weights.sum())
+    out["errors"] = evaluate.weighted_standard_errors(run.data.y_test, combined.label_index, weights)
+    out["bounds"] = evaluate.heavy_flow_bounds(run, combined.label_index, weights) or {}
+    out["channels"] = channels
     return out
 
 
@@ -167,35 +198,80 @@ def _object_classes(obj: Any) -> list[str] | None:
 # Tables
 # --------------------------------------------------------------------------------------------------------------
 def leaderboard_frame(run: "TrainingRun", evaluations: Mapping[str, "ChannelEvaluation"] | None = None, *,
-                      consensus: bool = True) -> pd.DataFrame:
+                      consensus: bool = True, traffic: bool = True) -> pd.DataFrame:
     """The leaderboard of 03 Measure (best balanced accuracy first), plus a ``Consensus`` row at the end.
 
     The consensus row (key ``"consensus"``) carries the scores of the combined verdict of every evaluated channel;
     its timing and row columns stay empty. It is left out with fewer than two channels or ``consensus=False``.
+
+    With ``traffic`` (the default) and when the run can be weighted to its recorded traffic, the recorded-traffic
+    estimate follows in extra columns (:func:`graticule.evaluate.traffic_columns`): ``traffic_flows_represented``
+    and one ``traffic_<metric>`` column per score, their standard errors and the heavy-flow ranges (``_low`` and
+    ``_high``), for every channel and the consensus. The rows keep the distinct-flow order; the other columns are
+    unchanged. Without the estimate the columns are left out.
     """
     evals = _evaluations(run, evaluations)
     board = evaluate.leaderboard(evals, run)
-    if not consensus or board.empty:
-        return board
-    readings = consensus_metrics(run, list(evals))
-    if readings is None:
-        return board
-    row: dict[str, Any] = {column: np.nan for column in board.columns}
-    row["key"] = CONSENSUS_KEY
-    row["Channel"] = f"Consensus ({readings['voters']} channels)"
-    for metric, title in evaluate.score_columns(run.request.mode):
-        row[title] = float(readings.get(metric, np.nan))
-    row["Gap to best"] = float(board["Balanced accuracy"].max()) - float(row["Balanced accuracy"])
-    extra = pd.DataFrame([row], columns=board.columns)
-    for column in ("Rows used", "Training rows"):
-        extra[column] = extra[column].astype("Int64")
-        board[column] = board[column].astype("Int64")
-    return pd.concat([board, extra], ignore_index=True)
+    readings = consensus_metrics(run, list(evals)) if consensus and not board.empty else None
+    if readings is not None:
+        row: dict[str, Any] = {column: np.nan for column in board.columns}
+        row["key"] = CONSENSUS_KEY
+        row["Channel"] = f"Consensus ({readings['voters']} channels)"
+        for metric, title in evaluate.score_columns(run.request.mode):
+            row[title] = float(readings.get(metric, np.nan))
+        row["Gap to best"] = float(board["Balanced accuracy"].max()) - float(row["Balanced accuracy"])
+        extra = pd.DataFrame([row], columns=board.columns)
+        for column in ("Rows used", "Training rows"):
+            extra[column] = extra[column].astype("Int64")
+            board[column] = board[column].astype("Int64")
+        board = pd.concat([board, extra], ignore_index=True)
+    if traffic and not board.empty:
+        board = _with_traffic_columns(board, run, list(evals), consensus=readings is not None)
+    return board
 
 
-def per_class_table(evaluations: Mapping[str, "ChannelEvaluation"]) -> pd.DataFrame:
-    """Every channel's per-class readings, stacked (channel order, then class order)."""
-    return evaluate.per_class_frame(evaluations)
+def _with_traffic_columns(board: pd.DataFrame, run: "TrainingRun", keys: Sequence[str], *,
+                          consensus: bool) -> pd.DataFrame:
+    """``board`` with the recorded-traffic columns joined on ``key`` (unchanged when the estimate is unavailable)."""
+    traffic = evaluate.traffic_readings(run)
+    if traffic is None:
+        return board
+    columns = evaluate.traffic_columns({k: traffic[k] for k in keys if k in traffic}, run.request.mode)
+    if consensus:
+        combined = consensus_traffic_metrics(run, list(keys))
+        if combined is not None:
+            row: dict[str, Any] = {"key": CONSENSUS_KEY, evaluate.TRAFFIC_FLOWS_COLUMN: combined["flows"]}
+            for metric, column in evaluate.traffic_metric_columns(run.request.mode):
+                row[column] = float(combined.get(metric, np.nan))
+            for metric, column in evaluate.TRAFFIC_ERROR_EXPORTS:
+                row[column] = float(combined["errors"].get(metric, np.nan))
+            row.update(evaluate.bound_values(combined.get("bounds")))
+            columns = pd.concat([columns, pd.DataFrame([row], columns=columns.columns)], ignore_index=True)
+    return board.merge(columns, on="key", how="left", validate="one_to_one")
+
+
+#: Per-class recorded-traffic columns of the per-class export: (column of the readings, export column).
+TRAFFIC_PER_CLASS_EXPORT: tuple[tuple[str, str], ...] = (
+    ("flows", "traffic_flows"), ("precision", "traffic_precision"), ("recall", "traffic_recall"),
+    ("f1", "traffic_f1"), ("roc_auc", "traffic_roc_auc"), ("average_precision", "traffic_average_precision"),
+)
+
+
+def per_class_table(evaluations: Mapping[str, "ChannelEvaluation"],
+                    traffic: Mapping[str, "TrafficEvaluation"] | None = None) -> pd.DataFrame:
+    """Every channel's per-class readings, stacked (channel order, then class order).
+
+    With ``traffic`` (:func:`graticule.evaluate.traffic_readings`), the recorded-traffic estimate of each channel
+    and class follows in the columns of :data:`TRAFFIC_PER_CLASS_EXPORT` (``traffic_flows`` is the class's estimated
+    recorded flows).
+    """
+    table = evaluate.per_class_frame(evaluations)
+    if not traffic or table.empty:
+        return table
+    weighted = evaluate.traffic_per_class_frame({k: traffic[k] for k in evaluations if k in traffic})
+    weighted = weighted[["key", "class", *[source for source, _ in TRAFFIC_PER_CLASS_EXPORT]]].rename(
+        columns=dict(TRAFFIC_PER_CLASS_EXPORT))
+    return table.merge(weighted, on=["key", "class"], how="left", validate="one_to_one")
 
 
 def predictions_frame(run: "TrainingRun", *, prepared: "PreparedDataset | None" = None,
@@ -331,8 +407,8 @@ def leaderboard_csv(run: "TrainingRun", evaluations: Mapping[str, "ChannelEvalua
 
 
 def per_class_csv(run: "TrainingRun", evaluations: Mapping[str, "ChannelEvaluation"] | None = None) -> bytes:
-    """Every channel's per-class readings as CSV bytes."""
-    return csv_bytes(per_class_table(_evaluations(run, evaluations)))
+    """Every channel's per-class readings as CSV bytes, with the recorded-traffic columns when the run has them."""
+    return csv_bytes(per_class_table(_evaluations(run, evaluations), evaluate.traffic_readings(run)))
 
 
 def predictions_csv(run: "TrainingRun", *, prepared: "PreparedDataset | None" = None) -> bytes:
@@ -394,10 +470,16 @@ EXPORTS: dict[str, tuple[str, str]] = {
     "leaderboard": ("Leaderboard",
                     "One row per channel, best balanced accuracy first: every score on the held-out rows, the gap to "
                     "the best channel, fit time, scoring speed, single-flow latency and training rows used; the "
-                    "last row is the consensus of all channels (equal-weight mean of their probabilities)."),
+                    "last row is the consensus of all channels (equal-weight mean of their probabilities). When "
+                    "the run allows it, traffic_ columns add the recorded-traffic estimate of every score, rough "
+                    "standard errors of its accuracy and balanced accuracy from the spread among the held-out rows "
+                    "(_se), where those two can lie given the heavily repeated flows that missed the held-out rows "
+                    "(_low, _high) and the estimated recorded flows the held-out rows stand for "
+                    "(traffic_flows_represented)."),
     "per_class": ("Per-class readings",
                   "One row per channel and class: held-out rows (support), precision, recall, F1, one-vs-rest "
-                  "ROC-AUC and average precision."),
+                  "ROC-AUC and average precision; when the run allows it, the same weighted to the recorded traffic "
+                  "(traffic_ columns, traffic_flows being the class's estimated recorded flows)."),
     "predictions": ("Held-out predictions",
                     "One row per held-out flow: its positions (and, for CIC-IDS2017 data, source file and 0-based "
                     "data-row number), true class and detailed label, each channel's verdict and class "
@@ -558,7 +640,12 @@ def readme_text(items: Sequence[ExportItem], run: "TrainingRun | None", *,
         "Notes", "-----",
         "- CSV files are UTF-8 with a byte-order mark, comma separated, with '.' as the decimal point; an empty "
         "cell is a missing number.",
-        "- Readings are measured on the held-out (test) rows of the run, which no fitting step saw.",
+        "- Readings are measured on the held-out (test) rows of the run, which no fitting step saw, counting each "
+        "distinct flow once. Columns starting with traffic_ are an estimate over the recorded traffic instead: each "
+        "held-out row weighted by the recorded flows it stands for (its copies in the cleaned files, meaning its "
+        "exact repeats and the rows identical to it over the chosen columns, divided by its class's sampling share "
+        "at 01 Sample). The _se columns see only the held-out rows; the _low and _high columns say where accuracy "
+        "and balanced accuracy can lie when heavily repeated flows of the files missed the held-out rows.",
         "- No file here holds flow feature values. Source file names and row numbers identify CIC-IDS2017 rows "
         "without copying them. Every row number (source_row, the Assay readings' row) counts data rows from 0, "
         "the header not included.",
@@ -626,7 +713,8 @@ def zip_names(data: bytes) -> list[str]:
 
 __all__ = [
     "ASSAY_OUTPUT_COLUMNS", "CONSENSUS_KEY", "CSV_ENCODING", "EXPORTS", "ExportItem", "assay_csv", "assay_frame",
-    "belongs_to_run", "bundle_zip", "consensus_metrics", "cross_validation_csv", "cross_validation_folds",
+    "TRAFFIC_PER_CLASS_EXPORT", "belongs_to_run", "bundle_zip", "consensus_metrics", "consensus_traffic_metrics",
+    "cross_validation_csv", "cross_validation_folds",
     "cross_validation_folds_csv", "cross_validation_table", "csv_bytes", "export_file_name", "export_items",
     "history_csv", "history_frame", "leaderboard_csv", "leaderboard_frame", "per_class_csv", "per_class_table",
     "predictions_csv", "predictions_frame", "readme_text", "sweep_csv", "sweep_frame", "zip_names",

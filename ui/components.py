@@ -14,6 +14,26 @@ from graticule.theme import Mode
 from ui import state
 from ui.stations import BY_KEY, PAGE_OBJECTS, STATIONS, UTILITIES, Station
 
+# Position (CSS nth-child, from 1) of the narrow gap column between 07 Record and the utilities in the stepper.
+_GAP_COLUMN = len(STATIONS) + 1
+# Scrolls the stepper strip (never the page) so the current station is in view when the strip is wider than the screen.
+# The station key is part of the text, so the script runs again whenever the current station changes. Static code
+# with one of the app's own station keys substituted; no viewer input reaches it.
+_SCROLL_TO_CURRENT = """<script>
+(() => {
+  const bring = () => {
+    const current = document.querySelector('[class*="st-key-stn_cur___KEY__"]');
+    const strip = current && current.closest('[data-testid="stHorizontalBlock"]');
+    if (!strip || strip.scrollWidth <= strip.clientWidth) return;
+    const box = current.getBoundingClientRect();
+    const view = strip.getBoundingClientRect();
+    if (box.left >= view.left && box.right <= view.right) return;
+    strip.scrollLeft += box.left - view.left - (view.width - box.width) / 2;
+  };
+  requestAnimationFrame(bring);
+})();
+</script>"""
+
 
 def shown_scores(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
     """A copy of ``frame`` whose score ``columns`` (those present) hold what four decimals should print.
@@ -53,9 +73,15 @@ def inject_css() -> None:
         [class*="st-key-stn_cur_"] {{ border-bottom: 3px solid {p.secondary}; }}
         [class*="st-key-g_cm_"] {{ overflow-x: auto; }}
         [class*="st-key-g_stepper"] [data-testid="stHorizontalBlock"] {{ flex-wrap: nowrap !important;
-            overflow-x: auto; scrollbar-width: thin; }}
+            overflow-x: auto; overflow-y: hidden; padding: 6px 0 4px 0; scrollbar-width: thin; }}
         [class*="st-key-g_stepper"] [data-testid="stColumn"] {{ min-width: 5.5rem !important;
             flex: 1 0 auto !important; width: auto !important; }}
+        [class*="st-key-g_stepper"] [data-testid="stHorizontalBlock"]
+            > [data-testid="stColumn"]:nth-child({_GAP_COLUMN}) {{ min-width: 1rem !important;
+            flex: 0.35 0 1rem !important; }}
+        [class*="st-key-g_stepscroll"] {{ display: none; }}
+        [class*="st-key-fit_channels"] [data-testid="stButtonGroup"] > div {{ flex-wrap: wrap; overflow-x: visible;
+            row-gap: 0.4rem; }}
         [class*="st-key-stn_cur_"] a p {{ font-weight: 700; }}
         .g-purpose {{ color: {p.muted}; margin-top: -0.6rem; margin-bottom: 0.8rem; }}
         .g-note {{ border-left: 3px solid {p.secondary}; padding: 0.4rem 0.8rem; background: {p.surface};
@@ -95,7 +121,8 @@ def _station_link(station: Station, current_key: str, suffix: str = "") -> None:
 def stepper(current_key: str, *, suffix: str = "") -> None:
     """The measuring-scale stepper: seven numbered stations, then the Logbook and Bench utilities.
 
-    On narrow screens the strip stays one row and scrolls sideways instead of stacking into a tall list. A background
+    On narrow screens the strip stays one row and scrolls sideways instead of stacking into a tall list, and it is
+    scrolled so the current station is in view (a phone at 07 Record would otherwise show 01 to 03 only). A background
     fit that has finished since the last rerun is adopted first, so the 02 Fit tick is right on every page.
     ``suffix`` is appended to the strip's element keys, so the shell can draw it a second time in one run (into the
     same placeholder) when a station earned its tick while it was drawn.
@@ -110,6 +137,8 @@ def stepper(current_key: str, *, suffix: str = "") -> None:
         for col, station in zip(cols[len(STATIONS) + 1 :], UTILITIES):
             with col:
                 _station_link(station, current_key, suffix)
+        with st.container(key=f"g_stepscroll{suffix}"):  # hidden by inject_css; only runs the script
+            st.html(_SCROLL_TO_CURRENT.replace("__KEY__", current_key), unsafe_allow_javascript=True)
     st.divider()
 
 

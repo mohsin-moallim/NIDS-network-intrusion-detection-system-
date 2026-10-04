@@ -22,7 +22,7 @@ from graticule.schema import FEATURES, LABEL, RATE_COLUMNS
 
 pytestmark = pytest.mark.integration
 PORT = schema.DESTINATION_PORT
-FLOWS, BUDGET, SEED, SHARE = 6_000, 3_000, 11, 0.35
+FLOWS, BUDGET, SEED, SHARE = 4_000, 2_000, 11, 0.35
 
 
 def _request(strategy: str = "drop", **changes: object) -> DataRequest:
@@ -181,6 +181,7 @@ def test_a_curated_copy_of_a_non_curated_column_is_kept() -> None:
 
 
 @pytest.mark.parametrize("mode", ["binary", pytest.param("multiclass", marks=pytest.mark.slow)])
+@pytest.mark.usefixtures("quick_ranking")  # a 20-round ranking model (tests/conftest.py)
 def test_sample_to_training_matrix(prepared: dict[str, PreparedDataset], mode: str) -> None:
     """The steps 02 Fit will take: target, split, ranking on the training part only, top-K selection."""
     ds = prepared["drop"]

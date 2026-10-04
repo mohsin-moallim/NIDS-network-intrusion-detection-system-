@@ -100,9 +100,11 @@ def _fit_form(prepared: PreparedDataset, current: AppSettings, last: TrainReques
             st.checkbox("Include Destination Port", value=bool(last.include_port) if last else False,
                         key="fit_port", help=PORT_HELP)
         with right:
-            st.multiselect("Channels", channel_keys, default=channels_default,
-                           format_func=training_ui.channel_label, key="fit_channels",
-                           help="Each channel is one model family; all of them see the same split.")
+            # Pills wrap onto a second line in a narrow column, so all five channels stay readable.
+            st.pills("Channels", channel_keys, selection_mode="multi", default=channels_default,
+                     format_func=training_ui.channel_label, key="fit_channels",
+                     help="Each channel is one model family; all of them see the same split. Click a channel to "
+                          "add or remove it.")
             st.toggle("Balanced class weights", value=bool(last.balanced) if last else True,
                       key="fit_balanced", help=WEIGHT_HELP)
             st.number_input("Minimum rows per class (multi-class only)", min_value=10, max_value=100_000,

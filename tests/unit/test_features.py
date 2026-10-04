@@ -1,4 +1,8 @@
-"""Feature-set selection (curated / all / top-K, port opt-in, degenerate columns) and the gain-based ranking."""
+"""Feature-set selection (curated / all / top-K, port opt-in, degenerate columns) and the gain-based ranking.
+
+The ranking tests use the 20-round ranking model of ``quick_ranking`` (tests/conftest.py); the app's 120 rounds
+are exercised by the real-data tests.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ from graticule import schema
 from graticule.data.synthetic import generate
 from graticule.features import FeatureChoice, rank_features, select_features
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("quick_ranking")]
 
 PORT = schema.DESTINATION_PORT
 CURATED_IN_ORDER = tuple(c for c in schema.FEATURES if c in schema.CURATED)

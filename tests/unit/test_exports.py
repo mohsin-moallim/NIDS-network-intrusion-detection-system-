@@ -14,27 +14,27 @@ import pandas as pd
 import pytest
 
 from graticule import evaluate
-from graticule.data.prepare import FILE_COL, ROW_COL, DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import FILE_COL, ROW_COL, DataRequest, PreparedDataset
 from graticule.history import RunHistory
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from graticule.models.train import TrainingRun, TrainRequest
 from graticule.report import exports
 from graticule.schema import FEATURE_SET
+from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
-SEED = 11
+SEED = 7
 BOM = b"\xef\xbb\xbf"
 
 
 @pytest.fixture(scope="module")
 def prepared() -> PreparedDataset:
-    """About 1,200 synthetic flows."""
-    return prepare_dataset(DataRequest(source="synthetic", synthetic_flows=1_200, seed=SEED))
+    """About 1,500 synthetic flows, shared with the other modules that use this sample."""
+    return shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
 
 
 def _fit(prepared: PreparedDataset, **changes: Any) -> TrainingRun:
-    request = TrainRequest(**{"profile": "test", "seed": SEED, **changes})
-    data = build_training_data(prepared, request)
-    return train_all(data, request, data_request=prepared.request, dataset_fingerprint=prepared.fingerprint)
+    """A fresh copy of a ``profile="test"`` fit of ``prepared`` (each fit made once per session, see shared_fit)."""
+    return shared_fit(prepared, TrainRequest(**{"profile": "test", "seed": SEED, **changes}))
 
 
 @pytest.fixture(scope="module")
@@ -80,7 +80,10 @@ def test_leaderboard_and_per_class_exports(runs: dict[str, TrainingRun]) -> None
         evals = evaluate.evaluate_run(run)
         board = read(exports.leaderboard_csv(run, evals))
         scores = [title for _, title in evaluate.score_columns(run.request.mode)]
-        assert list(board.columns) == ["key", "Channel", *scores, *evaluate.LEADERBOARD_TAIL]
+        # The distinct-flow columns first, then the recorded-traffic estimate (tests/unit/test_traffic.py).
+        traffic = list(evaluate.traffic_columns(evaluate.traffic_readings(run) or {}, run.request.mode).columns[1:])
+        assert traffic and all(c.startswith(evaluate.TRAFFIC_PREFIX) for c in traffic)
+        assert list(board.columns) == ["key", "Channel", *scores, *evaluate.LEADERBOARD_TAIL, *traffic]
         assert list(board["key"]) == [*evaluate.leaderboard(evals, run)["key"], exports.CONSENSUS_KEY]
         assert board["Balanced accuracy"].iloc[:-1].is_monotonic_decreasing
         consensus = exports.consensus_metrics(run)
@@ -89,7 +92,8 @@ def test_leaderboard_and_per_class_exports(runs: dict[str, TrainingRun]) -> None
         assert pd.isna(board["Fit s"].iloc[-1]) and board["Channel"].iloc[-1].startswith("Consensus")
         per_class = read(exports.per_class_csv(run, evals))
         assert list(per_class.columns) == ["key", "Channel", "class", "support", "precision", "recall", "f1",
-                                           "roc_auc", "average_precision"]
+                                           "roc_auc", "average_precision",
+                                           *[column for _, column in exports.TRAFFIC_PER_CLASS_EXPORT]]
         assert len(per_class) == len(evals) * len(run.data.classes), mode
 
 

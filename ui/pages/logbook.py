@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -43,11 +44,13 @@ LEFTOVER_MIN_AGE = 30.0
 BUNDLE_COLUMNS: tuple[str, ...] = ("Run", "Fitted (UTC)", "Mode", "Source", "Rows", "Channels",
                                    "Training rows inside", "Best channel", "Best balanced accuracy", "Check",
                                    "Folder")
+#: History columns shown in the table (the CSV holds every column). The source is left out because the files say it
+#: ("generated" for synthetic flows); whether the run was saved is a yes or no (its folder is named after the run).
 HISTORY_COLUMNS: dict[str, str] = {
-    "run_id": "Run", "created_utc": "Fitted (UTC)", "source": "Source", "files": "Files", "mode": "Mode",
+    "run_id": "Run", "created_utc": "Fitted (UTC)", "files": "Files", "mode": "Mode",
     "feature_mode": "Features", "rows_train": "Train rows", "rows_test": "Test rows", "channels": "Channels",
     "best_channel": "Best channel", "best_balanced_accuracy": "Best balanced accuracy", "seconds": "Fit s",
-    "saved_path": "Saved to",
+    "saved_path": "Saved",
 }
 
 
@@ -81,6 +84,30 @@ def _channel_name(key: str | None) -> str:
 def _mode_text(mode: str) -> str:
     """Readable mode name."""
     return {"binary": "binary", "multiclass": "multi-class"}.get(mode, mode)
+
+
+def when_text(created_utc: object) -> str:
+    """A recorded UTC time for a table, to the minute: ``"2026-10-03T16:15:36+00:00"`` -> ``"2026-10-03 16:15"``
+    (text that is not such a time is shown as it is)."""
+    text = str(created_utc or "")
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def files_text(files: object) -> str:
+    """The data files of a run, short enough for a table: the day and part of each CIC-IDS2017 file
+    (``"Wednesday"``, ``"Thursday-Morning-WebAttacks"``), or how many files when there are more than two."""
+    names = [name.strip() for name in str(files or "").split(",") if name.strip()]
+    if len(names) > 2:
+        return f"{len(names)} files"
+    short = []
+    for name in names:
+        stem = name.removesuffix(".csv").removesuffix(".pcap_ISCX")
+        short.append("-".join(part for part in stem.split("-") if part.lower() != "workinghours") or stem)
+    return ", ".join(short)
 
 
 def save_svm_key(run: TrainingRun) -> str:
@@ -190,15 +217,19 @@ def _current_section(run: TrainingRun | None) -> None:
 # Saved channel sets
 # --------------------------------------------------------------------------------------------------------------
 def bundle_table(bundles: list[persist.BundleSummary]) -> pd.DataFrame:
-    """The saved sets as a display table, newest first (``Check`` says why Load would refuse a set, if it would)."""
+    """The saved sets as a display table, newest first (``Check`` says why Load would refuse a set, if it would).
+
+    Compact enough for a 1440-pixel page: the time to the minute and the folder by its name (every set sits in the
+    saved-sets folder, named under the table).
+    """
     rows = [{
-        "Run": b.run_id, "Fitted (UTC)": b.created_utc, "Mode": _mode_text(b.mode), "Source": b.source,
+        "Run": b.run_id, "Fitted (UTC)": when_text(b.created_utc), "Mode": _mode_text(b.mode), "Source": b.source,
         "Rows": int(b.rows), "Channels": _badges(b.channels),
         "Training rows inside": int(getattr(b, "holds_training_rows", 0) or 0),
         "Best channel": _channel_name(b.best_channel),
         "Best balanced accuracy": b.best_balanced_accuracy,
         "Check": "manifest intact" if getattr(b, "problem", None) is None else f"refused: {b.problem}",
-        "Folder": str(b.path),
+        "Folder": Path(b.path).name,
     } for b in bundles]
     return pd.DataFrame(rows, columns=list(BUNDLE_COLUMNS))
 
@@ -364,21 +395,26 @@ def _bundles_section(current: TrainingRun | None) -> None:
         _unreadable_note(unreadable)
         _leftovers_section()
         return
+    table = bundle_table(bundles)
+    if (table["Folder"] == table["Run"]).all():  # every set sits in a folder named after its run: say it once
+        table = table.drop(columns=["Folder"])
     st.dataframe(
-        components.shown_scores(bundle_table(bundles), ("Best balanced accuracy",)), hide_index=True,
+        components.shown_scores(table, ("Best balanced accuracy",)), hide_index=True,
         width="stretch",
         column_config={
             "Rows": st.column_config.NumberColumn("Rows", format="localized", help="Training plus test rows."),
             "Training rows inside": st.column_config.NumberColumn(
-                "Training rows inside", format="localized",
-                help="Dataset rows written into the set: CH3's support vectors when it was saved by choice, "
-                     "else 0."),
-            "Best balanced accuracy": st.column_config.NumberColumn("Best balanced accuracy", format="%.4f"),
+                "Rows inside", format="localized",
+                help="Training rows inside: dataset rows written into the set, CH3's support vectors when it was "
+                     "saved by choice, else 0."),
+            "Best balanced accuracy": st.column_config.NumberColumn(
+                "Best bal. acc.", format="%.4f", help="Best balanced accuracy of the set's channels."),
             "Check": st.column_config.TextColumn("Check", help="Whether the manifest still matches the checksum "
                                                  "recorded in it, read without loading any model."),
-            "Folder": st.column_config.TextColumn("Folder", width="medium"),
+            "Folder": st.column_config.TextColumn("Folder", help="The set's folder inside the saved-sets folder."),
         },
     )
+    st.caption(f"Saved sets are kept in {Path(bundles[0].path).parent}, each in a folder named after its run.")
     _unreadable_note(unreadable)
     _leftovers_section()
     by_id = {b.run_id: b for b in bundles}
@@ -418,11 +454,15 @@ def _bundles_section(current: TrainingRun | None) -> None:
 # Run history
 # --------------------------------------------------------------------------------------------------------------
 def history_table(frame: pd.DataFrame) -> pd.DataFrame:
-    """The history as a display table (readable column names and channel badges)."""
+    """The history as a display table: readable column names, channel badges, the time to the minute, short file
+    names and whether the run was saved (the CSV keeps every column, the saved folder's full path included)."""
     shown = frame[list(HISTORY_COLUMNS)].copy()
     shown["channels"] = [_badges([k.strip() for k in str(v).split(",") if k.strip()]) for v in shown["channels"]]
     shown["best_channel"] = [_channel_name(v) for v in shown["best_channel"]]
     shown["mode"] = [_mode_text(str(v)) for v in shown["mode"]]
+    shown["created_utc"] = [when_text(v) for v in shown["created_utc"]]
+    shown["files"] = [files_text(v) for v in shown["files"]]
+    shown["saved_path"] = ["yes" if isinstance(v, str) and v else "no" for v in shown["saved_path"]]
     return shown.rename(columns=HISTORY_COLUMNS)
 
 
@@ -451,11 +491,16 @@ def _history_section() -> None:
         components.shown_scores(history_table(frame), ("Best balanced accuracy",)), hide_index=True,
         width="stretch",
         column_config={
+            "Files": st.column_config.TextColumn("Files", help="The data files, by day and part (the CSV holds "
+                                                 "their full names)."),
             "Train rows": st.column_config.NumberColumn("Train rows", format="localized"),
             "Test rows": st.column_config.NumberColumn("Test rows", format="localized"),
-            "Best balanced accuracy": st.column_config.NumberColumn("Best balanced accuracy", format="%.4f"),
+            "Best balanced accuracy": st.column_config.NumberColumn(
+                "Best bal. acc.", format="%.4f", help="Best balanced accuracy of the run's channels."),
             "Fit s": st.column_config.NumberColumn("Fit s", format="%.1f",
                                                    help="Seconds for the whole fit (matrices and channels)."),
+            "Saved": st.column_config.TextColumn("Saved", help="Whether the run was saved as a channel set (its "
+                                                 "folder is named after the run; the CSV gives the full path)."),
         },
     )
     shown = (f" The table shows the newest {len(frame):,}; the CSV holds all {total:,}."

@@ -1,7 +1,8 @@
 """The station map: every page of the app, its number, title, address and one-line purpose.
 
-``app.py`` turns this list into ``st.Page`` objects and stores them in :data:`PAGE_OBJECTS`, so any page can link to any
-other page by key without importing it.
+The shell (:mod:`ui.shell`) turns this list into ``st.Page`` objects and stores them in :data:`PAGE_OBJECTS`, so any
+page can link to any other page by key without importing it. Each station answers at ``/<url_path>`` (``/sample``,
+``/fit`` ...); the bare root address opens 01 Sample.
 """
 
 from __future__ import annotations
@@ -51,5 +52,5 @@ UTILITIES: tuple[Station, ...] = (
 ALL_STATIONS: tuple[Station, ...] = STATIONS + UTILITIES
 BY_KEY: dict[str, Station] = {s.key: s for s in ALL_STATIONS}
 
-# Filled in by app.py on every run: station key -> st.Page object (typed loosely to keep this module framework-free).
+# Filled in by the shell on every run: station key -> st.Page object (typed loosely to keep this module framework-free).
 PAGE_OBJECTS: dict[str, Any] = {}

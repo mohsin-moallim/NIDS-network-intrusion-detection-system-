@@ -16,12 +16,13 @@ import pandas as pd
 import pytest
 
 from graticule import evaluate
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import DataRequest, PreparedDataset
 from graticule.evaluate import ChannelEvaluation, EvaluationTask
 from graticule.models import train
 from graticule.models.jobs import CancelToken, TrainingCancelled
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from graticule.models.train import TrainingRun, TrainRequest
 from graticule.models.zoo import MODEL_KEYS
+from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
 SEED = 7
@@ -32,19 +33,15 @@ SEED = 7
 # --------------------------------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def prepared() -> PreparedDataset:
-    """About 1,500 synthetic flows (six classes)."""
-    return prepare_dataset(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
+    """About 1,500 synthetic flows (six classes), shared with the other modules that use this sample."""
+    return shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
 
 
 @pytest.fixture(scope="module")
 def runs(prepared: PreparedDataset) -> dict[str, TrainingRun]:
-    """All five channels fitted once per mode (test profile)."""
-    out = {}
-    for mode in ("binary", "multiclass"):
-        request = TrainRequest(mode=mode, profile="test", seed=SEED)  # type: ignore[arg-type]
-        data = build_training_data(prepared, request)
-        out[mode] = train_all(data, request, data_request=prepared.request, dataset_fingerprint=prepared.fingerprint)
-    return out
+    """All five channels fitted once per mode (test profile; each fit made once per session, see shared_fit)."""
+    return {mode: shared_fit(prepared, TrainRequest(mode=mode, profile="test", seed=SEED))  # type: ignore[arg-type]
+            for mode in ("binary", "multiclass")}
 
 
 def _fits() -> int:

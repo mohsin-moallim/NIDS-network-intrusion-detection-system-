@@ -2,7 +2,7 @@
 checks, no dataset rows on disk by default (CH3 is left out), the opt-in that saves CH3 with the training rows it is
 made of (declared in the manifest, held by ``svm.joblib`` only), and rebuilding/restoring a run without refitting.
 
-Every fit uses ``profile="test"`` (tiny models) on about 3,000 generated flows, without the destination port.
+Every fit uses ``profile="test"`` (tiny models) on about 1,500 generated flows, without the destination port.
 Bundles are written under pytest's temporary folders only.
 """
 
@@ -42,11 +42,12 @@ from graticule.persist import (
     write_manifest,
 )
 from graticule.schema import FEATURES
+from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[2]
-SEED = 11
+SEED = 7
 #: The channels a bundle keeps: every one but CH3, whose model is made of training rows.
 KEPT = tuple(k for k in MODEL_KEYS if k != "svm")
 MANIFEST_KEYS = {
@@ -62,8 +63,9 @@ CHANNEL_KEYS = {"status", "fit_status", "badge", "rows_used", "rows_available", 
 
 @pytest.fixture(scope="module")
 def prepared() -> PreparedDataset:
-    """About 2,500 synthetic flows (six classes)."""
-    return prepare_dataset(DataRequest(source="synthetic", synthetic_flows=2_500, seed=SEED))
+    """About 1,500 synthetic flows (six classes), shared with test_training.py, test_evaluate.py and the other
+    modules that use this sample (see shared_sample)."""
+    return shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
 
 
 def _fit(prepared: PreparedDataset, **changes: Any) -> TrainingRun:
@@ -74,8 +76,10 @@ def _fit(prepared: PreparedDataset, **changes: Any) -> TrainingRun:
 
 @pytest.fixture(scope="module")
 def runs(prepared: PreparedDataset) -> dict[str, TrainingRun]:
-    """All five channels fitted once per mode."""
-    return {mode: _fit(prepared, mode=mode) for mode in ("binary", "multiclass")}
+    """All five channels fitted once per mode (the same fits as test_training.py's, made once per session; see
+    shared_fit)."""
+    return {mode: shared_fit(prepared, TrainRequest(profile="test", seed=SEED, mode=mode))  # type: ignore[arg-type]
+            for mode in ("binary", "multiclass")}
 
 
 @pytest.fixture(scope="module")
@@ -232,9 +236,21 @@ def test_the_manifest_keeps_the_readings_03_measure_computed(runs: dict[str, Tra
     calls = sum(FIT_CALLS.values())
     manifest = _manifest(save_run(run, tmp_path))
     assert sum(FIT_CALLS.values()) == calls
+    traffic = evaluate.traffic_readings(run)
+    assert traffic is not None
     for key, evaluation in evaluations.items():
+        saved = manifest["channels"][key]["evaluation_metrics"]
         expected = {name: (value if np.isfinite(value) else None) for name, value in evaluation.metrics.items()}
-        assert manifest["channels"][key]["evaluation_metrics"] == expected, key
+        # The distinct-flow readings as 03 Measure computed them; the recorded-traffic estimate in optional
+        # traffic_ keys beside them.
+        assert {k: v for k, v in saved.items() if not k.startswith(evaluate.TRAFFIC_PREFIX)} == expected, key
+        weighted = {f"{evaluate.TRAFFIC_PREFIX}{name}": (value if np.isfinite(value) else None)
+                    for name, value in traffic[key].metrics.items()}
+        weighted[evaluate.TRAFFIC_FLOWS_COLUMN] = traffic[key].flows
+        weighted.update({column: traffic[key].errors[name] for name, column in evaluate.TRAFFIC_ERROR_EXPORTS})
+        if traffic[key].bounds:  # where the readings can lie, given the heavily repeated flows (none held out here)
+            weighted.update(evaluate.bound_values(traffic[key].bounds))
+        assert {k: v for k, v in saved.items() if k.startswith(evaluate.TRAFFIC_PREFIX)} == weighted, key
     assert {"f1_macro", "f1_weighted", "precision_macro", "recall_weighted", "roc_auc",
             "average_precision"} <= set(manifest["channels"]["svm"]["evaluation_metrics"])
 
@@ -243,9 +259,15 @@ def test_saving_twice_returns_the_same_folder_and_leaves_the_models_as_they_were
         runs: dict[str, TrainingRun], bundles: dict[str, Path]) -> None:
     run = runs["binary"]
     stamp = (bundles["binary"] / "manifest.json").stat().st_mtime_ns
-    assert save_run(run, bundles["binary"].parent) == bundles["binary"]
-    assert (bundles["binary"] / "manifest.json").stat().st_mtime_ns == stamp
-    assert run.channels["forest"].estimator[-1].n_jobs == -1  # the one-thread probe scoring was undone
+    forest = run.channels["forest"].estimator[-1]
+    own = forest.n_jobs  # the test profile's forest runs on one thread; the full profile's on every core
+    forest.n_jobs = -1
+    try:
+        assert save_run(run, bundles["binary"].parent) == bundles["binary"]
+        assert (bundles["binary"] / "manifest.json").stat().st_mtime_ns == stamp
+        assert forest.n_jobs == -1  # the one-thread probe scoring was undone
+    finally:
+        forest.n_jobs = own
     assert run.channels["xgboost"].estimator[-1].get_params()["callbacks"] is None
     assert not [p for p in bundles["binary"].parent.iterdir() if p.name.startswith(".")]
 
@@ -729,6 +751,7 @@ def test_rebuilding_refuses_the_same_rows_with_other_feature_values(prepared: Pr
     assert rebuild_training_data(bundle, data_dir=None, prepared=prepared).X_test.shape[0] > 0
 
 
+@pytest.mark.usefixtures("quick_ranking")  # a 20-round ranking model (tests/conftest.py)
 def test_a_top_k_run_survives_the_round_trip_without_ranking_again(prepared: PreparedDataset, tmp_path: Path,
                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
     run = _fit(prepared, feature_mode="topk", top_k=8, channels=("forest", "logreg"))

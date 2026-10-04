@@ -12,7 +12,7 @@ from streamlit.testing.v1 import AppTest
 from graticule import evaluate
 from graticule.models import train
 from graticule.models.jobs import claim_slot, release_slot
-from tests.ui.harness import draw_synthetic_sample, errors, fresh_caches, goto, new_app  # noqa: F401
+from tests.ui.harness import app_with_run, errors, fit_synthetic, fresh_caches, goto, new_app  # noqa: F401
 from ui import state
 from ui.pages import measure
 
@@ -49,16 +49,15 @@ def _frames(at: AppTest, column: str) -> list:
 
 
 def _fitted_app(mode: str = "binary", channels: list[str] | None = None) -> AppTest:
-    at = new_app().run()
-    draw_synthetic_sample(at, flows=2_000, budget=1_200)
-    goto(at, "fit")
-    if mode != "binary":
-        at.radio(key="fit_mode").set_value(mode)
+    """A session holding a small synthetic sample and a fit of it, at 02 Fit: fitted directly, as 02 Fit fits
+    (the 02 Fit form has its own tests; ``test_no_retrain.py`` goes from the form to this station)."""
+    options: dict[str, object] = {"mode": mode}
     if channels is not None:
-        at.multiselect(key="fit_channels").set_value(channels)
-    at.button(key="fit_submit").click().run()
+        options["channels"] = tuple(channels)
+    prepared, run = fit_synthetic(flows=2_000, budget=1_200, **options)
+    at = app_with_run(run, prepared, key="fit").run()
     assert not errors(at), errors(at)
-    assert at.session_state[state.LAST_RUN_ID]
+    assert at.session_state[state.LAST_RUN_ID] == run.run_id
     return at
 
 
@@ -82,9 +81,15 @@ def test_binary_run_renders_every_section_and_widgets_never_refit(fresh_caches: 
     assert evals is not None and list(evals) == run.ok_channels()
     board = _frames(at, "Gap to best")[0]
     assert list(board.columns[:3]) == ["Channel", "Balanced accuracy", "Accuracy"]
-    assert {"Precision (attack)", "Recall (attack)", "F1 (attack)", "ROC-AUC", "Average precision", "Fit s",
-            "Flows/s", "Rows used"} <= set(board.columns)
+    assert {"Precision (attack)", "Recall (attack)", "F1 (attack)", "ROC-AUC", "Average precision"} <= set(board.columns)
     assert board["Balanced accuracy"].is_monotonic_decreasing
+    # Timing and rows sit in their own table under Timing (so the leaderboard fits the page), in the same order,
+    # with scoring speed in whole flows per second.
+    timing = _frames(at, "Single-flow ms")[0]
+    assert list(timing.columns) == ["Channel", "Fit s", "Flows/s", "Single-flow ms", "Rows used", "Training rows"]
+    assert list(timing["Channel"]) == list(board["Channel"]) and "Fit s" not in board.columns
+    assert all(float(v).is_integer() for v in timing["Flows/s"].dropna())
+    assert "measure" in at.session_state[state.DONE]  # the readings are shown: 03 Measure is ticked
     assert any("held-out rows: ○ Normal" in c.value and "◆ Attack" in c.value for c in at.caption)
     assert "CH3 trained on" in " ".join(m.value for m in at.markdown)  # the SVM row-cap badge
     titles = _titles(at)
@@ -95,13 +100,15 @@ def test_binary_run_renders_every_section_and_widgets_never_refit(fresh_caches: 
     assert {"Fit time", "Scoring speed", "Single-flow latency"} <= set(titles)
     assert [b.key for b in at.get("download_button")][:2] == ["ms_dl_board", "ms_dl_per_class"]
 
-    # Changing every widget redraws without refitting, and never recomputes the readings.
+    # Changing every widget redraws without refitting, and never recomputes the readings. (Here all of them in one
+    # redraw; tests/ui/test_no_retrain.py changes each widget of this station on its own, with a redraw after each.)
     first = evaluate.cached_evaluations(run)
-    at.radio(key="ms_cm_show").set_value("Counts").run()
-    at.radio(key="ms_roc_zoom").set_value(measure.ROC_OPTIONS[1]).run()
-    at.selectbox(key=measure.run_key("ms_detail_channel", run)).set_value("svm").run()
-    at.number_input(key="ms_cv_k").set_value(3).run()
-    at.multiselect(key=measure.run_key("ms_cv_channels", run)).set_value(["forest", "logreg"]).run()
+    at.radio(key="ms_cm_show").set_value("Counts")
+    at.radio(key="ms_roc_zoom").set_value(measure.ROC_OPTIONS[1])
+    at.selectbox(key=measure.run_key("ms_detail_channel", run)).set_value("svm")
+    at.number_input(key="ms_cv_k").set_value(3)
+    at.multiselect(key=measure.run_key("ms_cv_channels", run)).set_value(["forest", "logreg"])
+    at.run()
     assert not errors(at), errors(at)
     assert _fits() == fits
     assert all(len(chart.proto.datasets) > 0 for chart in at.get("vega_lite_chart"))  # kept specs keep their data

@@ -49,11 +49,23 @@ def build_folder(root: Path) -> dict[str, list[dict[str, object]]]:
     return {MON: mon, TUE: tue, THU: thu}
 
 
+@pytest.fixture(scope="module")
+def default_files(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, list[dict[str, object]]]]:
+    """The three files of :func:`build_folder` written once for the checks that only read them, with their rows."""
+    root = tmp_path_factory.mktemp("prepare_default") / "data"
+    return root, build_folder(root)
+
+
 @pytest.fixture
-def folder(tmp_path: Path) -> Path:
-    root = tmp_path / "data"
-    build_folder(root)
-    return root
+def folder(default_files: tuple[Path, dict[str, list[dict[str, object]]]]) -> Path:
+    """The folder of :func:`build_folder`'s three files, shared by the checks that only read it (written once)."""
+    return default_files[0]
+
+
+@pytest.fixture(scope="module")
+def default_sample(default_files: tuple[Path, dict[str, list[dict[str, object]]]]) -> prepare.PreparedDataset:
+    """The three files prepared with every option at its default, once for the checks that only read the result."""
+    return prepare_dataset(_request(default_files[0]))
 
 
 def _request(folder: Path, **changes: object) -> DataRequest:
@@ -62,8 +74,8 @@ def _request(folder: Path, **changes: object) -> DataRequest:
     return DataRequest(**base)  # type: ignore[arg-type]
 
 
-def test_counts_reconcile(folder: Path) -> None:
-    ds = prepare_dataset(_request(folder))
+def test_counts_reconcile(default_sample: prepare.PreparedDataset) -> None:
+    ds = default_sample
     rec = ds.reconciliation()
     assert rec == {
         "rows_read": 44 + 32 + 48, "empty_labels": 0, "bad_value_rows_dropped": 1, "duplicates_within_files": 3,
@@ -80,9 +92,10 @@ def test_counts_reconcile(folder: Path) -> None:
     assert ds.rows_kept == 119 and not ds.sampling.sampled
 
 
-def test_frame_layout_and_provenance(folder: Path) -> None:
-    rows = build_folder(folder)
-    ds = prepare_dataset(_request(folder))
+def test_frame_layout_and_provenance(default_files: tuple[Path, dict[str, list[dict[str, object]]]],
+                                     default_sample: prepare.PreparedDataset) -> None:
+    rows = default_files[1]
+    ds = default_sample
     frame = ds.frame
     assert list(frame.columns) == [*FEATURES, LABEL, prepare.FILE_COL, prepare.ROW_COL]
     assert all(frame[c].dtype == np.float32 for c in FEATURES)
@@ -101,8 +114,8 @@ def test_frame_layout_and_provenance(folder: Path) -> None:
     assert set(frame.loc[frame[prepare.FILE_COL] == THU, LABEL]) >= {"Web Attack - Brute Force"}
 
 
-def test_views_and_tables(folder: Path) -> None:
-    ds = prepare_dataset(_request(folder))
+def test_views_and_tables(default_sample: prepare.PreparedDataset) -> None:
+    ds = default_sample
     assert list(ds.features().columns) == list(FEATURES)
     assert ds.labels().equals(ds.frame[LABEL])
     assert list(ds.provenance().columns) == [prepare.FILE_COL, prepare.ROW_COL]
@@ -182,8 +195,8 @@ def test_no_rows_left_is_a_readable_error_not_an_empty_sample(tmp_path: Path, ro
         prepare_dataset(request)
 
 
-def test_class_table_has_fixed_columns_even_when_empty(folder: Path) -> None:
-    ds = prepare_dataset(_request(folder))
+def test_class_table_has_fixed_columns_even_when_empty(default_sample: prepare.PreparedDataset) -> None:
+    ds = default_sample
     empty = replace(ds, sampling=replace(ds.sampling, before={}, after={}))
     table = empty.class_table()
     assert list(table.columns) == list(prepare.CLASS_TABLE_COLUMNS) and table.empty
@@ -223,10 +236,12 @@ def test_sampling_is_rare_aware_and_deterministic(folder: Path) -> None:
     assert rec["removed_by_sampling"] == 119 - 60
 
 
-def test_fingerprint_ignores_where_the_folder_is(folder: Path, tmp_path: Path) -> None:
+def test_fingerprint_ignores_where_the_folder_is(folder: Path, default_sample: prepare.PreparedDataset,
+                                                 tmp_path: Path) -> None:
     moved = tmp_path / "moved"
     shutil.copytree(folder, moved)
-    assert prepare_dataset(_request(folder)).fingerprint == prepare_dataset(_request(moved)).fingerprint
+    assert default_sample.request.data_dir == str(folder)  # the folder's own sample, prepared once for the module
+    assert default_sample.fingerprint == prepare_dataset(_request(moved)).fingerprint
 
 
 def test_file_order_is_canonical(folder: Path) -> None:
@@ -257,7 +272,7 @@ def test_injected_reader_stager_and_progress(folder: Path) -> None:
     assert any(m.startswith("Checking") for m, _ in events)  # progress inside each file, not only after it
 
 
-def test_shared_reads_serve_every_strategy_unchanged(folder: Path) -> None:
+def test_shared_reads_serve_every_strategy_unchanged(folder: Path, default_sample: prepare.PreparedDataset) -> None:
     """One read per file serves all strategies: the frames are never modified, and results match fresh reads."""
     cache: dict[str, tuple[pd.DataFrame, FileReadReport]] = {}
 
@@ -270,9 +285,11 @@ def test_shared_reads_serve_every_strategy_unchanged(folder: Path) -> None:
     snapshot = {name: frame.copy() for name, (frame, _) in cache.items()}
     second = prepare_dataset(_request(folder, row_budget=50), read_file=reader)
     assert first.fingerprint == second.fingerprint
+    assert default_sample.request == _request(folder)  # "drop" with every other option at its default
     for strategy in ("impute", "recompute", "drop"):
         shared = prepare_dataset(_request(folder, nonfinite_strategy=strategy), read_file=reader)
-        fresh = prepare_dataset(_request(folder, nonfinite_strategy=strategy))
+        # A fresh preparation without the shared reads (the default one is prepared once for the module).
+        fresh = default_sample if strategy == "drop" else prepare_dataset(_request(folder, nonfinite_strategy=strategy))
         pd.testing.assert_frame_equal(shared.frame, fresh.frame)
         assert shared.reconciliation() == fresh.reconciliation()
     for name, (frame, _) in cache.items():
@@ -358,7 +375,9 @@ def test_impute_and_recompute_keep_the_bad_row(folder: Path) -> None:
     assert recompute.nonfinite.recomputed == {"Flow Bytes/s": 1, "Flow Packets/s": 1}
 
 
-def test_errors_are_readable(folder: Path, tmp_path: Path) -> None:
+def test_errors_are_readable(tmp_path: Path) -> None:
+    folder = tmp_path / "data"
+    build_folder(folder)  # a folder of the test's own: a narrow file is added below
     with pytest.raises(DataFileError, match="not found"):
         prepare_dataset(_request(tmp_path / "missing"))
     with pytest.raises(DataFileError, match="not found in the data folder"):
@@ -432,8 +451,8 @@ def test_peak_memory_watch() -> None:
         assert watch.peak_mb is None and watch.start_mb is None
 
 
-def test_memory_rise_is_reported_next_to_the_process_peak(folder: Path) -> None:
-    ds = prepare_dataset(_request(folder))
+def test_memory_rise_is_reported_next_to_the_process_peak(default_sample: prepare.PreparedDataset) -> None:
+    ds = default_sample
     if ds.peak_memory_mb is None:
         assert ds.memory_rise_mb is None
     else:

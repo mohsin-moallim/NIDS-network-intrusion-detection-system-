@@ -122,28 +122,8 @@ def kind_encodings(mode: Mode = "light", *, field: str = "kind") -> tuple[alt.Co
     return colour, shape
 
 
-_LABEL_GAP_PX = 9
-_LABEL_CHAR_PX = 6.5  # advance width of a 10 px mono digit or comma, rounded up
-
-
-def _log_floor_with_room(rows: list[dict[str, object]], high: float, width: int) -> float:
-    """Lower end of the log axis, low enough that each sampled count fits between the axis and its filled mark.
-
-    On a log axis from ``low`` to ``high`` a value ``v`` sits ``width * log(v / low) / log(high / low)`` pixels from
-    the left edge; solving that for the label width (plus a small gap) gives the largest ``low`` that works for
-    every class. It is never above the smallest value divided by 1.8, as before labels were placed there.
-    """
-    values = [float(v) for r in rows for v in (r["before"], r["after"]) if v]
-    log_high = np.log(high)
-    log_low = np.log(min(values) / 1.8)
-    for r in rows:
-        if not r["after"]:
-            continue
-        need = _LABEL_GAP_PX + _LABEL_CHAR_PX * len(str(r["label"])) + 4
-        if need >= width:
-            continue
-        log_low = min(log_low, (width * np.log(float(r["after"])) - need * log_high) / (width - need))
-    return float(np.exp(log_low))
+_COUNT_GAP_PX = 10  # from the right edge of the plot to the column of sampled counts
+_COUNT_CHAR_PX = 6.5  # advance width of a 10 px mono digit or comma, rounded up
 
 
 def class_distribution_chart(
@@ -156,9 +136,11 @@ def class_distribution_chart(
 ) -> alt.LayerChart:
     """Dot plot of rows per class on a log scale: hollow mark before sampling, filled mark in the sample.
 
-    Classes are ordered by rows available. Normal traffic is a blue circle, attacks vermilion diamonds. The sampled
-    count is written just left of the filled mark it belongs to (the space between the axis and the filled mark is
-    always free, since a sample never exceeds what is available); the scale starts low enough to leave room for it.
+    Classes are ordered by rows available. Normal traffic is a blue circle, attacks vermilion diamonds. Each class's
+    sampled count is printed in a column of its own just right of the plot, level with its row (0 for a class the
+    sample lacks). Kept out of the plot, the numbers never meet the marks or the class names however narrow the
+    chart is drawn: the plot gives way instead. ``width`` is the chart's width when it is not fitted to a container
+    (as in the PDF).
     """
     p = palette(mode)
     classes = sorted(set(before) | set(after), key=lambda c: (-int(before.get(c, 0)), -int(after.get(c, 0)), c))
@@ -176,7 +158,7 @@ def class_distribution_chart(
     data = pd.DataFrame(rows)
     positive = [v for r in rows for v in (r["before"], r["after"]) if v]
     high = max(positive) * 5 if positive else 10
-    low = _log_floor_with_room(rows, high, width) if positive else 0.5
+    low = min(positive) / 1.8 if positive else 0.5
     x_scale = alt.Scale(type="log", domain=[low, high], nice=False)
     y = alt.Y("class:N", sort=classes, title=None, axis=alt.Axis(labelLimit=240, ticks=False, domain=False))
     colour, shape = kind_encodings(mode)
@@ -186,9 +168,10 @@ def class_distribution_chart(
         alt.Tooltip("after:Q", title="Rows in sample", format=","),
     ]
     base = alt.Chart(data)
+    # A narrow plot leaves out tick labels that would overlap rather than printing them over each other.
+    x_axis = alt.Axis(format="~s", tickCount=6, labelOverlap="greedy", labelSeparation=6)
     span = base.mark_rule(color=p.muted, strokeWidth=1, opacity=0.7).encode(
-        x=alt.X("low:Q", scale=x_scale, title="Rows (log scale)", axis=alt.Axis(format="~s", tickCount=6)),
-        x2="high:Q", y=y,
+        x=alt.X("low:Q", scale=x_scale, title="Rows (log scale)", axis=x_axis), x2="high:Q", y=y,
     )
     # Hollow marks are filled with the page colour so the connecting rule does not show through them.
     outline = alt.Stroke("kind:N", legend=None,
@@ -199,14 +182,15 @@ def class_distribution_chart(
     filled = base.mark_point(filled=True, size=90, opacity=1).encode(
         x=alt.X("after:Q", scale=x_scale), y=y, color=colour, shape=shape, tooltip=tooltip,
     )
-    counts = base.mark_text(align="right", baseline="middle", dx=-_LABEL_GAP_PX, fontSize=10, color=p.muted).encode(
-        x=alt.X("after:Q", scale=x_scale), y=y, text="label:N",
-    )
+    # The count column starts at the plot's right edge (Vega's "width"); right-aligned, so digits line up.
+    column_px = _COUNT_CHAR_PX * max((len(str(r["label"])) for r in rows), default=1)
+    counts = base.mark_text(align="right", baseline="middle", dx=_COUNT_GAP_PX + column_px, fontSize=10,
+                            color=p.muted).encode(x=alt.value("width"), y=y, text="label:N", tooltip=tooltip)
     chart = _layer(span, hollow, filled, counts).properties(
         width=width,
         height=max(110, 26 * len(classes)),
-        title=alt.Title(title, subtitle="Hollow mark: rows available after cleaning. Filled mark and number: rows in "
-                                        "the sample."),
+        title=alt.Title(title, subtitle=["Hollow mark: rows available after cleaning.",
+                                         "Filled mark, number at right: rows in sample."]),
     )
     return base_config(chart, mode)
 
@@ -477,7 +461,11 @@ def share_text(share: float, *, decimals: int = 1) -> str:
 
 
 def _confusion_cells(counts: np.ndarray, classes: Sequence[str], mode: Mode, show: str) -> pd.DataFrame:
-    """One row per confusion-matrix cell with its shade step (0..9), text and text colour."""
+    """One row per confusion-matrix cell with its shade step (0..9), text and text colour.
+
+    ``counts`` may hold fractional values (estimated flows): shares and shading use them as they are; the cell text
+    and the ``count`` field hold them rounded to whole numbers.
+    """
     p = palette(mode)
     totals = counts.sum(axis=1, keepdims=True)
     share = np.divide(counts, totals, out=np.zeros(counts.shape, dtype=np.float64), where=totals > 0)
@@ -488,10 +476,11 @@ def _confusion_cells(counts: np.ndarray, classes: Sequence[str], mode: Mode, sho
     rows = []
     for i, true_name in enumerate(classes):
         for j, predicted in enumerate(classes):
-            count = int(counts[i, j])
+            value = float(counts[i, j])
+            count = int(round(value))
             row_share = float(share[i, j])
             if show == "count":
-                step = int(min(np.floor(10 * np.log1p(count) / np.log1p(biggest)), 9)) if biggest > 0 else 0
+                step = int(min(np.floor(10 * np.log1p(value) / np.log1p(biggest)), 9)) if biggest > 0 else 0
             else:
                 step = int(min(np.floor(row_share * 10 + 1e-9), 9))
             shown_share = share_text(row_share)
@@ -499,7 +488,7 @@ def _confusion_cells(counts: np.ndarray, classes: Sequence[str], mode: Mode, sho
             if k <= 6:
                 text = f"{shown_share}\n{count_text}" if show != "count" else f"{count_text}\n{shown_share}"
             else:
-                text = "" if count == 0 else (count_text if show == "count" else share_text(row_share, decimals=0))
+                text = "" if value == 0 else (count_text if show == "count" else share_text(row_share, decimals=0))
             ink = on_light if step <= 4 else on_dark
             rows.append({"true": str(true_name), "predicted": str(predicted), "count": count, "share": row_share,
                          "step": step, "text": text, "ink": ink, "share_text": shown_share})
@@ -516,6 +505,7 @@ def confusion_chart(
     subtitle: str | None = None,
     width: int | None = None,
     height: int | None = None,
+    unit: str = "Rows",
 ) -> alt.LayerChart:
     """Confusion-matrix heatmap: rows are the true classes, columns the predicted ones.
 
@@ -523,8 +513,11 @@ def confusion_chart(
     on a log scale; either way the sequential ramp has ten steps and the cell text switches between ink and light
     lettering by step so it stays readable. With up to six classes a cell shows both numbers (the shaded one
     first); with more it shows the shaded one only and leaves empty cells blank (the tooltip has both).
+
+    ``counts`` may be fractional (the estimated recorded flows of 03 Measure's traffic view): shares and shading use
+    the values as they are, and the numbers shown are rounded. ``unit`` titles the count in the tooltip.
     """
-    matrix = np.asarray(counts, dtype=np.int64)
+    matrix = np.asarray(counts, dtype=np.float64)
     names = [str(c) for c in classes]
     k = len(names)
     if matrix.shape != (k, k):
@@ -537,7 +530,7 @@ def confusion_chart(
               axis=alt.Axis(orient="bottom", labelAngle=angle, labelLimit=120, ticks=False, domain=False))
     y = alt.Y("true:N", sort=names, title="True class", axis=alt.Axis(labelLimit=120, ticks=False, domain=False))
     tooltip = [alt.Tooltip("true:N", title="True class"), alt.Tooltip("predicted:N", title="Predicted"),
-               alt.Tooltip("count:Q", title="Rows", format=","), alt.Tooltip("share_text:N", title="Row share")]
+               alt.Tooltip("count:Q", title=unit, format=","), alt.Tooltip("share_text:N", title="Row share")]
     base = alt.Chart(cells)
     rect = base.mark_rect(stroke=palette(mode).background, strokeWidth=1).encode(
         x=x, y=y, tooltip=tooltip,
@@ -998,19 +991,22 @@ def cv_spread_chart(
 
 
 def held_out_classes_chart(
-    counts: Mapping[str, int],
+    counts: Mapping[str, float],
     mode: Mode = "light",
     *,
     title: str = "Held-out rows per class",
     subtitle: str | None = None,
     width: int = DEFAULT_WIDTH,
+    unit: str = "Held-out rows",
 ) -> alt.LayerChart:
     """The test-set class distribution: one mark per class on a log scale, the count written beside it.
 
-    Normal traffic is a blue circle, attack classes vermilion diamonds. Classes are ordered by row count.
+    Normal traffic is a blue circle, attack classes vermilion diamonds. Classes are ordered by row count. ``counts``
+    may be estimates (rounded to whole numbers here); ``unit`` names them on the axis and in the tooltip.
     """
     p = palette(mode)
-    items = sorted(((str(k), int(v)) for k, v in counts.items() if int(v) > 0), key=lambda t: (-t[1], t[0]))
+    rounded = ((str(k), int(round(float(v)))) for k, v in counts.items())
+    items = sorted(((k, v) for k, v in rounded if v > 0), key=lambda t: (-t[1], t[0]))
     items = items[:MAX_CHART_ROWS]
     data = pd.DataFrame({"class": [k for k, _ in items], "rows": [v for _, v in items],
                          "kind": [kind_of(k) for k, _ in items], "label": [f"{v:,}" for _, v in items]})
@@ -1021,11 +1017,11 @@ def held_out_classes_chart(
     colour, shape = kind_encodings(mode)
     base = alt.Chart(data)
     rule = base.mark_rule(color=p.border, strokeWidth=1).encode(
-        x=alt.X("rows:Q", scale=x_scale, title="Held-out rows (log scale)", axis=alt.Axis(format="~s")),
+        x=alt.X("rows:Q", scale=x_scale, title=f"{unit} (log scale)", axis=alt.Axis(format="~s")),
         x2=alt.X2(datum=0.5), y=y)
     dots = base.mark_point(filled=True, size=80, opacity=1).encode(
         x=alt.X("rows:Q", scale=x_scale), y=y, color=colour, shape=shape,
-        tooltip=[alt.Tooltip("class:N", title="Class"), alt.Tooltip("rows:Q", title="Held-out rows", format=",")])
+        tooltip=[alt.Tooltip("class:N", title="Class"), alt.Tooltip("rows:Q", title=unit, format=",")])
     text = base.mark_text(align="left", baseline="middle", dx=9, fontSize=10, color=p.muted).encode(
         x=alt.X("rows:Q", scale=x_scale), y=y, text="label:N")
     chart = _layer(rule, dots, text).properties(
@@ -1056,6 +1052,10 @@ def value_text(value: float) -> str:
     return f"{number:.4g}"
 
 
+#: Left padding (pixels) of :func:`contribution_chart`, room for long axis labels measured before the font loaded.
+CONTRIBUTION_LEFT_PAD = 36
+
+
 def contribution_chart(
     frame: pd.DataFrame,
     mode: Mode = "light",
@@ -1077,7 +1077,9 @@ def contribution_chart(
     (``toward_label``), bars left of it push away (``away_label``). Bars pushing towards attack are vermilion and
     bars pushing towards normal blue, the two ends of the diverging ramp (``toward_is_normal`` swaps them when the
     explained class is the normal one). Every bar carries its signed value, so the direction never rests on colour
-    alone. Bars are clipped to the plot.
+    alone. Bars are clipped to the plot. The left padding is wider than usual: a browser can lay the chart out
+    before the label font has loaded, and the longest feature label (``Bwd Packet Length Mean = 1,897.9``) then
+    renders wider than it was measured and would be cut at the left edge.
     """
     from graticule.theme import DIVERGING
 
@@ -1126,6 +1128,7 @@ def contribution_chart(
         x=alt.X("zero:Q", scale=x_scale))
     chart = alt.layer(_layer(bars, right, left), zero).properties(
         width=width, height=max(90, 22 * len(order) + 10), title=alt.Title(title, subtitle=subtitle or ""),
+        padding={"left": CONTRIBUTION_LEFT_PAD, "top": 8, "right": 8, "bottom": 8},
     )
     return base_config(chart, mode)
 

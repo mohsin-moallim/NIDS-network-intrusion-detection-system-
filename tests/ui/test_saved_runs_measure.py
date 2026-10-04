@@ -37,6 +37,7 @@ from graticule import evaluate, persist
 from graticule.data.prepare import DataRequest, prepare_dataset
 from graticule.models import train
 from graticule.models.train import TrainRequest, build_training_data, train_all
+from tests.helpers import shared_fit, shared_sample
 from tests.ui.harness import (  # noqa: F401
     draw_synthetic_sample,
     errors,
@@ -181,7 +182,7 @@ def _fit_save_and_measure(at: AppTest) -> dict[str, Any]:
     take 03 Measure's readings of the run in memory: the reference every reload is compared with."""
     draw_synthetic_sample(at, flows=2_000, budget=1_200)
     goto(at, "fit")
-    at.multiselect(key="fit_channels").set_value(SAVED_CHANNELS)
+    at.pills(key="fit_channels").set_value(SAVED_CHANNELS)
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     original = at.session_state[state.RUN]
@@ -207,7 +208,10 @@ def test_a_saved_fit_reloaded_in_this_session_measures_exactly_like_the_original
     fitted = _fit_save_and_measure(at)
     # The manifest holds the full readings 03 Measure shows (the same numbers, computed from the stored ones).
     for key, evaluation in fitted["evaluations"].items():
-        assert fitted["manifest"]["channels"][key]["evaluation_metrics"] == _plain_metrics(evaluation.metrics), key
+        saved = fitted["manifest"]["channels"][key]["evaluation_metrics"]
+        distinct = {k: v for k, v in saved.items() if not k.startswith(evaluate.TRAFFIC_PREFIX)}
+        assert distinct == _plain_metrics(evaluation.metrics), key
+        assert {f"{evaluate.TRAFFIC_PREFIX}balanced_accuracy", evaluate.TRAFFIC_FLOWS_COLUMN} <= set(saved), key
     assert {"precision", "recall", "f1", "roc_auc", "average_precision",
             "precision_macro"} <= set(fitted["manifest"]["channels"]["forest"]["evaluation_metrics"])
     _load_and_measure_here(at, fitted["original"], fitted["reference"], fitted["fit_readings"], fitted["fits"])
@@ -335,15 +339,19 @@ def test_a_real_data_set_is_rebuilt_from_the_bench_folder_and_measures_like_the_
     goto(at, "measure")
     assert not errors(at), errors(at)
     board = next(d.value for d in at.dataframe if "Gap to best" in d.value.columns)
-    pd.testing.assert_frame_equal(board.drop(columns=[TIMED_COLUMN]), expected, check_exact=True)
+    pd.testing.assert_frame_equal(board, expected[list(board.columns)], check_exact=True)
+    # Fit time and rows as recorded, scoring speed in whole flows per second (the latency is measured again).
+    timing = next(d.value for d in at.dataframe if TIMED_COLUMN in d.value.columns)
+    assert timing["Channel"].tolist() == expected["Channel"].tolist()
+    assert timing["Fit s"].tolist() == expected["Fit s"].tolist()
+    assert timing["Rows used"].tolist() == expected["Rows used"].tolist()
+    assert timing["Flows/s"].tolist() == [round(v) for v in expected["Flows/s"]]
     assert _fits() == fits
 
 
 def test_a_run_loaded_without_its_held_out_rows_explains_itself(fresh_caches: None, tmp_path: Path) -> None:
-    prepared = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=1_500, seed=5))
-    request = TrainRequest(profile="test", seed=5, channels=("forest", "xgboost", "logreg"))
-    data = build_training_data(prepared, request)
-    run = train_all(data, request, data_request=prepared.request, dataset_fingerprint=prepared.fingerprint)
+    prepared = shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=7))
+    run = shared_fit(prepared, TrainRequest(profile="test", seed=7, channels=("forest", "xgboost", "logreg")))
     folder = persist.save_run(run)  # into the test's own saved_models folder
     # As if the run had been fitted on CIC-IDS2017 files in a folder that has gone since (the manifest is sealed
     # again after the edit, as a bundle saved that way would be; the request is only read to rebuild the rows).

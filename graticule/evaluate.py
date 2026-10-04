@@ -13,6 +13,18 @@ models are explicit and bounded:
 showing the readings again never recomputes them. Results of the on-demand measurements can be kept with the run
 the same way (:func:`remember_cross_validation`, :func:`remember_permutation`).
 
+Distinct flows and recorded traffic. Exact repeats are merged before the split, so every reading above counts each
+DISTINCT flow once, however often the files recorded it; that stays the primary reading. :func:`traffic_readings`
+adds a second, clearly labelled ESTIMATE of how the channels read the recorded traffic itself: each held-out row
+``i`` is weighted by ``w_i = copies_i / f_c(i)``, where ``copies_i`` is how many rows of the cleaned files (after the
+bad-value strategy) the row stands for once every exact repeat is counted (``TrainingData.test_copies``, which also
+folds in the rows merged over the chosen columns at 02 Fit) and ``f_c`` is the share of the row's class that the
+01 Sample draw kept (rows of that class in the sample divided by its distinct rows available before sampling; 1 when
+the class was taken whole). The sum of the weights estimates the held-out share of the recorded traffic, and the
+weighted readings estimate what a channel would read over all recorded flows of the selected files, leaving out rows
+dropped for bad values (and rows a non-default conflict policy removed). Like :func:`evaluate_run`, it is computed
+once per run from the stored test-set probabilities and kept on the run; nothing is refitted or rescored.
+
 Long measurements run as an :class:`EvaluationTask` (a daemon thread with progress, elapsed time and a cancel
 token, or inline on the calling thread). The task never touches the web framework; the UI polls its snapshot. An
 exclusive task holds the process-wide work slot of :mod:`graticule.models.jobs` while it runs, so it never runs
@@ -28,7 +40,7 @@ import traceback
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -46,6 +58,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import StratifiedKFold
 
+from graticule.data.sampling import apply_class_options
 from graticule.models.jobs import CancelToken, JobBusyError, TrainingCancelled, busy_message, claim_slot, release_slot
 from graticule.theme import CHANNEL_BY_KEY
 
@@ -527,12 +540,14 @@ def held_out_counts(run: "TrainingRun") -> dict[str, int]:
 
 
 def held_out_repeats(run: "TrainingRun") -> dict[str, int] | None:
-    """How much recorded traffic the held-out rows stand for, or None when the run carries no repeat counts.
+    """How many rows of the cleaned files the held-out rows stand for, or None when the run carries no repeat counts.
 
-    Exact repeats are merged before the split, so every held-out row is one distinct flow and every reading counts
-    it once, however often it occurred in the files. Returns ``rows`` (held-out rows), ``flows`` (rows of the
-    source files they stand for, repeats included), ``largest`` (the most any one row stands for) and
-    ``repeated`` (held-out rows standing for more than one recorded flow).
+    Repeats are merged before the split (exact ones at 01 Sample, rows identical over the chosen columns at 02 Fit),
+    so every held-out row is one distinct flow and every reading counts it once, however often it occurred in the
+    files. Returns ``rows`` (held-out rows), ``flows`` (rows of the cleaned files they stand for, every copy
+    counted: the recorded copies, NOT scaled up for the flows 01 Sample left out; see :func:`traffic_summary` for
+    that estimate), ``largest`` (the most copies any one row stands for) and ``repeated`` (held-out rows standing
+    for more than one row of the files).
     """
     copies = getattr(run.data, "test_copies", None)
     if copies is None or len(copies) == 0 or len(copies) != len(run.data.y_test):
@@ -546,10 +561,11 @@ def repeats_sentence(repeats: Mapping[str, int] | None) -> str | None:
     """Plain words on what a held-out row stands for (see :func:`held_out_repeats`); None when nothing repeats."""
     if not repeats or repeats.get("flows", 0) <= repeats.get("rows", 0):
         return None
-    return (f"Each held-out row is a distinct flow: exact repeats were merged before the split, so these "
-            f"{repeats['rows']:,} rows stand for {repeats['flows']:,} recorded flows (one of them for "
-            f"{repeats['largest']:,}). Every reading counts a distinct flow once. A whole file scored at 05 Assay "
-            "counts every repeat, so a channel that misses a much-repeated flow reads lower there than here.")
+    return (f"Each held-out row is a distinct flow: repeats were merged before the split (exact ones, and rows "
+            f"identical over the chosen columns), so these {repeats['rows']:,} rows stand for "
+            f"{repeats['flows']:,} rows of the cleaned files (one of them for {repeats['largest']:,} copies). Every "
+            "reading counts a distinct flow once. A whole file scored at 05 Assay counts every repeat, so a channel "
+            "that misses a much-repeated flow reads lower there than here.")
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -619,6 +635,846 @@ def per_class_frame(evals: Mapping[str, ChannelEvaluation]) -> pd.DataFrame:
     if not parts:
         return pd.DataFrame(columns=["key", "Channel", "class", "support", "precision", "recall", "f1", "roc_auc",
                                      "average_precision"])
+    return pd.concat(parts, ignore_index=True)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Recorded-traffic readings (an estimate; see the module notes)
+# --------------------------------------------------------------------------------------------------------------
+#: Attribute under which the recorded-traffic readings are kept on a run.
+TRAFFIC_ATTR = "traffic_evaluations"
+#: Prefix of the recorded-traffic columns of the CSV exports and of their keys in a saved set's manifest.
+TRAFFIC_PREFIX = "traffic_"
+#: Column (and manifest key) holding the sum of the weights: the recorded flows the held-out rows stand for.
+TRAFFIC_FLOWS_COLUMN = "traffic_flows_represented"
+#: Attribute under which the weights, their summary and the heavy-flow account are kept on a run (computed once).
+TRAFFIC_BASIS_ATTR = "traffic_basis"
+#: The estimate is marked as resting on a few flows (and the pages warn) when the verdicts on the heavily repeated
+#: flows that missed the held-out rows could move weighted accuracy or weighted balanced accuracy by at least this
+#: much (see :class:`HeavyClass`), when the verdict on one held-out row can (see :class:`TrafficSummary`), or when at
+#: most :data:`CONCENTRATED_ROWS` rows carry half of the weight. On Wednesday nine DoS Hulk flows, each recorded
+#: 1,317 to 9,329 times, carry 16.5 % of the attack traffic; whether any of them lands among the held-out rows is
+#: chance (at the 200,000-row budget, seed 42 and binary mode one of them does: 1,485 copies, an estimated 4,627
+#: recorded flows, 2.8 % of the weight).
+SWING_LIMIT = 0.01
+CONCENTRATED_ROWS = 25
+#: Per-class columns of the recorded-traffic readings (``flows`` is the weighted count of the class's rows).
+TRAFFIC_PER_CLASS_COLUMNS: tuple[str, ...] = ("class", "flows", "precision", "recall", "f1", "roc_auc",
+                                              "average_precision")
+
+
+def _weights(weights: npt.ArrayLike, n_rows: int) -> np.ndarray:
+    """Row weights as a flat float64 array of length ``n_rows``; raises ``ValueError`` unless finite and >= 0."""
+    w = np.asarray(weights, dtype=np.float64).reshape(-1)
+    if w.shape != (n_rows,):
+        raise ValueError(f"Expected {n_rows} weights, got {w.size}.")
+    if not np.isfinite(w).all() or (w < 0).any():
+        raise ValueError("Weights must be finite and not negative.")
+    return w
+
+
+def _weighted_auc(is_class: np.ndarray, score: np.ndarray, w: np.ndarray) -> float:
+    """Weighted ROC-AUC of one class against the rest; NaN unless both sides carry weight."""
+    inside, outside = float(w[is_class].sum()), float(w[~is_class].sum())
+    if inside <= 0 or outside <= 0:
+        return float("nan")
+    return float(roc_auc_score(is_class, score, sample_weight=w))
+
+
+def _weighted_ap(is_class: np.ndarray, score: np.ndarray, w: np.ndarray) -> float:
+    """Weighted average precision of one class against the rest; NaN when the class carries no weight."""
+    if float(w[is_class].sum()) <= 0:
+        return float("nan")
+    return float(average_precision_score(is_class, score, sample_weight=w))
+
+
+def weighted_classification_metrics(y_true: npt.ArrayLike, y_pred: npt.ArrayLike, proba: npt.ArrayLike,
+                                    n_classes: int, weights: npt.ArrayLike) -> dict[str, float]:
+    """The readings of :func:`classification_metrics` (same keys) with row ``i`` counted ``weights[i]`` times.
+
+    Accuracy is the weight of the rows read right over the total weight; balanced accuracy the mean, over the classes
+    whose rows carry weight, of each class's weighted recall. Precision, recall and F1 (binary: class code 1; else
+    macro and weighted averages, the latter by weighted class totals), ROC-AUC and average precision pass the weights
+    to scikit-learn as ``sample_weight``. With whole-number weights every reading equals that of
+    :func:`classification_metrics` on the rows repeated that many times. No weight at all gives NaN readings.
+    """
+    truth, guess = _codes(y_true), _codes(y_pred)
+    k = int(n_classes)
+    if truth.shape != guess.shape:
+        raise ValueError("y_true and y_pred must have the same length.")
+    w = _weights(weights, len(truth))
+    nan = float("nan")
+    names = ["accuracy", "balanced_accuracy", "f1_macro", "f1_weighted", "precision_macro", "recall_macro",
+             "precision_weighted", "recall_weighted", "roc_auc", "average_precision"]
+    total = float(w.sum())
+    if truth.size == 0 or total <= 0:
+        out = {name: nan for name in names}
+        if k == 2:
+            out.update(precision=nan, recall=nan, f1=nan)
+        return out
+    present = [int(c) for c in np.unique(truth) if float(w[truth == c].sum()) > 0]
+    recalls = [float(w[(truth == c) & (guess == c)].sum()) / float(w[truth == c].sum()) for c in present]
+    labels = list(range(k))
+    out: dict[str, float] = {
+        "accuracy": float(w[truth == guess].sum()) / total,
+        "balanced_accuracy": float(np.mean(recalls)),
+        "f1_macro": float(f1_score(truth, guess, labels=labels, average="macro", sample_weight=w, zero_division=0)),
+        "f1_weighted": float(f1_score(truth, guess, labels=labels, average="weighted", sample_weight=w,
+                                      zero_division=0)),
+    }
+    for average in ("macro", "weighted"):
+        p, r, _, _ = precision_recall_fscore_support(truth, guess, labels=labels, average=average, sample_weight=w,
+                                                     zero_division=0)
+        out[f"precision_{average}"] = float(p)
+        out[f"recall_{average}"] = float(r)
+    scores = _scores(proba, len(truth), k)
+    if k == 2:
+        p, r, f, _ = precision_recall_fscore_support(truth, guess, labels=[1], average=None, sample_weight=w,
+                                                     zero_division=0)
+        out["precision"], out["recall"], out["f1"] = float(p[0]), float(r[0]), float(f[0])
+        out["roc_auc"] = _weighted_auc(truth == 1, scores[:, 1], w)
+        out["average_precision"] = _weighted_ap(truth == 1, scores[:, 1], w)
+        return out
+    if len(present) == k:
+        out["roc_auc"] = float(roc_auc_score(truth, scores, multi_class="ovr", average="macro", labels=labels,
+                                             sample_weight=w))
+    else:
+        out["roc_auc"] = nan
+    aps = [_weighted_ap(truth == c, scores[:, c], w) for c in present]
+    out["average_precision"] = float(np.mean(aps)) if aps else nan
+    return out
+
+
+def weighted_per_class_metrics(y_true: npt.ArrayLike, y_pred: npt.ArrayLike, proba: npt.ArrayLike,
+                               classes: Sequence[str], weights: npt.ArrayLike) -> pd.DataFrame:
+    """One row per class in code order, weighted like :func:`weighted_classification_metrics`.
+
+    Columns (:data:`TRAFFIC_PER_CLASS_COLUMNS`): class, flows (the summed weight of the class's rows, in place of
+    :func:`per_class_metrics`' support), precision, recall, f1, roc_auc and average_precision (one-vs-rest on that
+    class's probability; NaN when the class carries no weight).
+    """
+    truth, guess = _codes(y_true), _codes(y_pred)
+    k = len(classes)
+    labels = list(range(k))
+    w = _weights(weights, len(truth))
+    if truth.size == 0 or float(w.sum()) <= 0:
+        p = r = f = np.zeros(k)
+        s = np.zeros(k, dtype=np.float64)
+        aucs = aps = [float("nan")] * k
+    else:
+        p, r, f, _ = precision_recall_fscore_support(truth, guess, labels=labels, average=None, sample_weight=w,
+                                                     zero_division=0)
+        s = np.array([float(w[truth == c].sum()) for c in labels], dtype=np.float64)
+        scores = _scores(proba, len(truth), k)
+        aucs = [_weighted_auc(truth == c, scores[:, c], w) for c in labels]
+        aps = [_weighted_ap(truth == c, scores[:, c], w) for c in labels]
+    return pd.DataFrame({
+        "class": pd.Series([str(c) for c in classes], dtype="str"),
+        "flows": np.asarray(s, dtype=np.float64),
+        "precision": np.asarray(p, dtype=np.float64),
+        "recall": np.asarray(r, dtype=np.float64),
+        "f1": np.asarray(f, dtype=np.float64),
+        "roc_auc": np.asarray(aucs, dtype=np.float64),
+        "average_precision": np.asarray(aps, dtype=np.float64),
+    })
+
+
+def weighted_standard_errors(y_true: npt.ArrayLike, y_pred: npt.ArrayLike,
+                             weights: npt.ArrayLike) -> dict[str, float]:
+    """Rough standard errors of weighted accuracy and weighted balanced accuracy (keys ``accuracy`` and
+    ``balanced_accuracy``), from the spread among the rows given.
+
+    Each is a weighted ratio, so its error is linearised: for accuracy ``p = sum(w e) / sum(w)`` (``e`` = 1 when a
+    row is read right) the error is ``sqrt(sum(w^2 (e - p)^2)) / sum(w)``; each class's weighted recall gets the same
+    within its own rows, and balanced accuracy, their mean over K classes, the root of their summed squares over K.
+    With unit weights the accuracy error is the familiar ``sqrt(p (1 - p) / n)``. A few heavy rows among those given
+    make it large. It can only see the rows it is given: for the recorded-traffic estimate that means the held-out
+    rows, so heavily repeated flows that missed them leave no trace in it (see :func:`heavy_flow_bounds`, which
+    accounts for them). NaN without weight.
+    """
+    truth, guess = _codes(y_true), _codes(y_pred)
+    w = _weights(weights, len(truth))
+    right = (truth == guess).astype(np.float64)
+    total = float(w.sum())
+    nan = float("nan")
+    if total <= 0:
+        return {"accuracy": nan, "balanced_accuracy": nan}
+    p = float((w * right).sum()) / total
+    accuracy = float(np.sqrt(np.sum(w ** 2 * (right - p) ** 2))) / total
+    parts = []
+    for c in np.unique(truth):
+        inside = truth == c
+        weight = float(w[inside].sum())
+        if weight <= 0:
+            continue
+        recall = float((w[inside] * right[inside]).sum()) / weight
+        parts.append(float(np.sum(w[inside] ** 2 * (right[inside] - recall) ** 2)) / weight ** 2)
+    balanced = float(np.sqrt(np.sum(parts))) / len(parts) if parts else nan
+    return {"accuracy": accuracy, "balanced_accuracy": balanced}
+
+
+def weighted_confusion(y_true: npt.ArrayLike, y_pred: npt.ArrayLike, n_classes: int,
+                       weights: npt.ArrayLike) -> np.ndarray:
+    """Confusion matrix (rows: true class, columns: predicted, code order) of summed weights, as float64."""
+    truth, guess = _codes(y_true), _codes(y_pred)
+    w = _weights(weights, len(truth))
+    k = int(n_classes)
+    matrix = np.zeros((k, k), dtype=np.float64)
+    if truth.size:
+        np.add.at(matrix, (truth, guess), w)
+    return matrix
+
+
+def _sampling_scales(run: "TrainingRun") -> tuple[dict[str, float], bool] | None:
+    """Per class drawn at 01 Sample, distinct rows available divided by rows kept (1 / f_c), with the Web Attack
+    merge flag; None when the run does not record its sampling shares."""
+    shares = (getattr(run.data, "reports", None) or {}).get("sampling")
+    if not isinstance(shares, Mapping):
+        return None
+    before, after = shares.get("before"), shares.get("after")
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        return None
+    scales: dict[str, float] = {}
+    for name, available in before.items():
+        try:
+            total, kept = int(available), int(after.get(name, 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if total > 0 and kept > 0:
+            scales[str(name)] = total / kept
+    return scales, bool(shares.get("merge_web_attacks", False))
+
+
+def sampling_fractions(run: "TrainingRun") -> dict[str, float] | None:
+    """f_c for every class drawn at 01 Sample: rows kept in the sample divided by distinct rows available before the
+    draw (1.0 for a class taken whole), from the run's reports; None when the run does not record them."""
+    found = _sampling_scales(run)
+    if found is None:
+        return None
+    return {name: 1.0 / scale for name, scale in found[0].items()}
+
+
+def _traffic_basis(run: "TrainingRun") -> tuple[np.ndarray | None, str | None]:
+    """(weights, None) when the run can be weighted to its recorded traffic, else (None, the reason in words)."""
+    if not has_test_rows(run):
+        return None, "This run holds no held-out rows."
+    data = run.data
+    n = len(data.y_test)
+    copies = getattr(data, "test_copies", None)
+    if copies is None:
+        return None, ("This run does not record how many recorded flows each held-out row stands for (its sample "
+                      "was drawn without repeat counts), so only the distinct-flow readings exist.")
+    copies = np.asarray(copies, dtype=np.float64).reshape(-1)
+    if len(copies) != n or not np.isfinite(copies).all() or (copies < 1).any():
+        return None, "The repeat counts kept with this run do not match its held-out rows."
+    found = _sampling_scales(run)
+    if found is None:
+        return None, ("This run does not record how 01 Sample thinned each class (it was fitted before Graticule "
+                      "kept those shares); fit it again to add the recorded-traffic estimate.")
+    scales, merged = found
+    labels = np.asarray(getattr(data, "detailed_test_labels", np.empty(0)), dtype=object).astype(str)
+    if len(labels) != n:
+        return None, "The detailed labels kept with this run do not match its held-out rows."
+    strata = apply_class_options(pd.Series(labels, dtype="str"), merge_web_attacks=merged).to_numpy(dtype=object)
+    names, inverse = np.unique(strata.astype(str), return_inverse=True)
+    missing = [str(name) for name in names if str(name) not in scales]
+    if missing:
+        return None, f"The sampling report of this run holds no share for {', '.join(missing)}."
+    factor = np.array([scales[str(name)] for name in names], dtype=np.float64)
+    return copies * factor[inverse], None
+
+
+@dataclass(frozen=True)
+class HeavyClass:
+    """The heavily repeated flows of one class of the target (an entry of ``TrainingData.reports["heavy_flows"]``,
+    see :func:`graticule.models.train.heavy_flow_report`).
+
+    01 Sample knows how often the cleaned files recorded EVERY distinct flow it drew from, sampled or not, so these
+    counts cover the flows the sample left out as well as those it kept. A flow is heavily repeated in a class when
+    the files recorded it at least ``threshold`` times.
+
+    Attributes:
+        name: class of the target.
+        recorded: rows of the cleaned files in this class (every copy counted).
+        threshold: copies from which a flow counts as heavily repeated in this class.
+        flows: heavily repeated flows the cleaned files hold in this class.
+        copies: their rows in the cleaned files.
+        held_out: how many of them are among the held-out rows.
+        held_out_copies: the copies of those held out.
+    """
+
+    name: str
+    recorded: int
+    threshold: int
+    flows: int
+    copies: int
+    held_out: int
+    held_out_copies: int
+
+    @property
+    def unknown_copies(self) -> int:
+        """Copies of the heavily repeated flows that are NOT among the held-out rows (trained on, or never sampled):
+        no held-out verdict covers them."""
+        return max(int(self.copies) - int(self.held_out_copies), 0)
+
+    @property
+    def unknown_share(self) -> float:
+        """:attr:`unknown_copies` over the class's recorded rows: how far their verdicts alone can move the class's
+        recall over the recorded traffic."""
+        return self.unknown_copies / self.recorded if self.recorded > 0 else 0.0
+
+
+def _heavy_account(data: Any, n_rows: int) -> tuple[tuple[HeavyClass, ...], np.ndarray] | None:
+    """The run's heavy-flow account per target class (code order) and a mask of the held-out rows that hold a
+    heavily repeated flow; None when the run does not record it or it does not fit the held-out rows."""
+    report = (getattr(data, "reports", None) or {}).get("heavy_flows")
+    known = report.get("classes") if isinstance(report, Mapping) else None
+    if not isinstance(known, Mapping):
+        return None
+    account: list[HeavyClass] = []
+    mask = np.zeros(int(n_rows), dtype=bool)
+    try:
+        for name in data.classes:
+            entry = known.get(str(name))
+            if not isinstance(entry, Mapping):
+                return None
+            account.append(HeavyClass(
+                name=str(name), recorded=int(entry.get("recorded", 0)), threshold=int(entry.get("threshold", 0)),
+                flows=int(entry.get("flows", 0)), copies=int(entry.get("copies", 0)),
+                held_out=int(entry.get("held_out", 0)), held_out_copies=int(entry.get("held_out_copies", 0))))
+            rows = np.asarray(list(entry.get("rows") or ()), dtype=np.int64)
+            if rows.size and (int(rows.min()) < 0 or int(rows.max()) >= n_rows):
+                return None
+            mask[rows] = True
+    except (TypeError, ValueError):
+        return None
+    if not account or any(c.recorded <= 0 for c in account):
+        return None
+    return tuple(account), mask
+
+
+@dataclass(frozen=True)
+class TrafficSummary:
+    """What the recorded-traffic weights of a run's held-out rows add up to (see :func:`traffic_weights`), and how
+    much of the estimate rests on a few flows.
+
+    Attributes:
+        rows: held-out rows.
+        flows: the sum of the weights: the estimated recorded flows the held-out rows stand for (an estimate of the
+            held-out share of the recorded traffic of the classes in play).
+        repeats: the sum of the repeat counts alone: rows of the cleaned files behind the held-out rows themselves
+            (recorded copies, not scaled up for the flows 01 Sample left out).
+        by_class: summed weight per class of the target, in class-code order.
+        largest: the largest single weight (estimated recorded flows of the heaviest held-out row).
+        largest_share: ``largest / flows``: how far the verdict on that one row can move weighted accuracy.
+        balanced_swing: the most the verdict on any one row can move weighted balanced accuracy (its weight over its
+            class's weight, divided by the number of classes).
+        rows_for_half: the fewest held-out rows whose weights add up to at least half of ``flows``.
+        sampled_classes: sampling share f_c of every class drawn at 01 Sample (1.0 when taken whole).
+        largest_copies: copies in the cleaned files of the heaviest held-out row.
+        largest_fraction: the sampling share of that row's class (``largest = largest_copies / largest_fraction``).
+        recorded: rows of the cleaned files in the classes of the target (None when the run does not record them).
+        test_share: the share of every class held out at 02 Fit (None when unknown).
+        heavy: the heavy-flow account per class of the target (empty when the run does not record it).
+    """
+
+    rows: int
+    flows: float
+    repeats: int
+    by_class: dict[str, float]
+    largest: float
+    largest_share: float
+    balanced_swing: float
+    rows_for_half: int
+    sampled_classes: dict[str, float]
+    largest_copies: int = 0
+    largest_fraction: float = 1.0
+    recorded: int | None = None
+    test_share: float | None = None
+    heavy: tuple[HeavyClass, ...] = ()
+
+    @property
+    def heavy_accuracy_swing(self) -> float:
+        """How far the verdicts on the heavily repeated flows that missed the held-out rows can move weighted
+        accuracy over the recorded traffic (their copies over all recorded rows of the target's classes)."""
+        total = sum(c.recorded for c in self.heavy)
+        return sum(c.unknown_copies for c in self.heavy) / total if total > 0 else 0.0
+
+    @property
+    def heavy_balanced_swing(self) -> float:
+        """How far those verdicts can move weighted balanced accuracy (the mean over classes of their share)."""
+        return float(np.mean([c.unknown_share for c in self.heavy])) if self.heavy else 0.0
+
+    @property
+    def heavy_concentrated(self) -> bool:
+        """True when heavily repeated flows that missed the held-out rows could move a reading by
+        :data:`SWING_LIMIT` or more: neither the estimate nor its standard errors can see them."""
+        return max(self.heavy_accuracy_swing, self.heavy_balanced_swing) >= SWING_LIMIT
+
+    @property
+    def rows_concentrated(self) -> bool:
+        """True when a handful of held-out rows carry much of the weight (see :data:`SWING_LIMIT`)."""
+        return (self.largest_share >= SWING_LIMIT or self.balanced_swing >= SWING_LIMIT
+                or self.rows_for_half <= CONCENTRATED_ROWS)
+
+    @property
+    def concentrated(self) -> bool:
+        """True when the estimate rests on a few flows: heavily repeated flows missing from the held-out rows
+        (:attr:`heavy_concentrated`) or a few heavy held-out rows (:attr:`rows_concentrated`)."""
+        return self.heavy_concentrated or self.rows_concentrated
+
+
+def _summary(run: "TrainingRun", w: np.ndarray,
+             heavy: tuple[tuple[HeavyClass, ...], np.ndarray] | None) -> TrafficSummary:
+    """The :class:`TrafficSummary` of the weights ``w`` of ``run`` (``heavy`` from :func:`_heavy_account`)."""
+    classes = [str(c) for c in run.data.classes]
+    codes = _codes(run.data.y_test)
+    copies = np.asarray(run.data.test_copies, dtype=np.int64)
+    total = float(w.sum())
+    ordered = np.sort(w)[::-1]
+    half = int(np.searchsorted(np.cumsum(ordered), total / 2.0, side="left")) + 1 if total > 0 else 0
+    heaviest = int(np.argmax(w)) if len(w) else -1
+    largest = float(w[heaviest]) if heaviest >= 0 else 0.0
+    by_class = np.bincount(codes, weights=w, minlength=len(classes)) if len(w) else np.zeros(len(classes))
+    present = int((by_class > 0).sum())
+    per_class_share = np.divide(w, by_class[codes], out=np.zeros_like(w), where=by_class[codes] > 0)
+    swing = float(per_class_share.max()) / present if len(w) and present else 0.0
+    account = heavy[0] if heavy is not None else ()
+    share = getattr(getattr(run, "request", None), "test_share", None)
+    return TrafficSummary(
+        rows=int(len(w)), flows=total, repeats=int(copies.sum()),
+        by_class={name: float(w[codes == i].sum()) for i, name in enumerate(classes)},
+        largest=largest, largest_share=largest / total if total > 0 else 0.0, balanced_swing=swing,
+        rows_for_half=min(half, len(w)), sampled_classes=dict(sampling_fractions(run) or {}),
+        largest_copies=int(copies[heaviest]) if heaviest >= 0 else 0,
+        largest_fraction=float(copies[heaviest]) / largest if heaviest >= 0 and largest > 0 else 1.0,
+        recorded=sum(c.recorded for c in account) if account else None,
+        test_share=float(share) if isinstance(share, (int, float)) else None, heavy=tuple(account),
+    )
+
+
+@dataclass(frozen=True)
+class _TrafficBasis:
+    """What every recorded-traffic reading of a run starts from, computed once and kept on the run."""
+
+    data: Any
+    weights: np.ndarray | None
+    reason: str | None
+    summary: TrafficSummary | None
+    heavy: tuple[tuple[HeavyClass, ...], np.ndarray] | None
+
+
+def _basis(run: "TrainingRun") -> _TrafficBasis:
+    """The run's weights, unavailable reason, summary and heavy-flow account: computed on the first call and kept on
+    the run (:data:`TRAFFIC_BASIS_ATTR`), so redrawing a page never computes them again. Kept per data object: a run
+    given other matrices gets a fresh basis. Thread-safe."""
+    data = getattr(run, "data", None)
+    kept = getattr(run, TRAFFIC_BASIS_ATTR, None)
+    if isinstance(kept, _TrafficBasis) and kept.data is data:
+        return kept
+    with _EVAL_LOCK:
+        kept = getattr(run, TRAFFIC_BASIS_ATTR, None)
+        if isinstance(kept, _TrafficBasis) and kept.data is data:
+            return kept
+        weights, reason = _traffic_basis(run)
+        heavy = summary = None
+        if weights is not None:
+            weights.setflags(write=False)
+            heavy = _heavy_account(data, len(weights))
+            summary = _summary(run, weights, heavy)
+        kept = _TrafficBasis(data=data, weights=weights, reason=reason, summary=summary, heavy=heavy)
+        try:
+            setattr(run, TRAFFIC_BASIS_ATTR, kept)
+        except AttributeError:  # an object that takes no new attributes: computed again next time
+            pass
+        return kept
+
+
+def traffic_weights(run: "TrainingRun") -> np.ndarray | None:
+    """The recorded-traffic weight of every held-out row (float64, test-row order), or None when unavailable.
+
+    ``w_i = copies_i / f_c(i)``: the rows of the cleaned files (after the bad-value strategy) held-out row ``i``
+    stands for once every repeat is counted (``TrainingData.test_copies``: its exact repeats, and the rows merged
+    with it at 02 Fit because they are identical over the chosen columns), divided by the 01 Sample share f_c of the
+    row's detailed class (its sampling class when the Web Attack types were drawn as one; 1 when the class was taken
+    whole). Rows merged at 02 Fit that carried other detailed labels of the same target class are scaled by the kept
+    row's share. Computed once per run (a fresh copy is returned). :func:`traffic_unavailable_reason` says why None
+    was returned.
+    """
+    weights = _basis(run).weights
+    return None if weights is None else np.array(weights, dtype=np.float64, copy=True)
+
+
+def traffic_unavailable_reason(run: "TrainingRun") -> str | None:
+    """Why ``run`` has no recorded-traffic readings, in plain words; None when it has them."""
+    return _basis(run).reason
+
+
+def traffic_summary(run: "TrainingRun") -> TrafficSummary | None:
+    """Totals and concentration of the recorded-traffic weights of ``run`` (computed once per run); None when they
+    are unavailable."""
+    return _basis(run).summary
+
+
+def heavy_flow_bounds(run: "TrainingRun", y_pred: npt.ArrayLike,
+                      weights: npt.ArrayLike | None = None) -> dict[str, tuple[float, float]] | None:
+    """Where weighted accuracy and balanced accuracy over the recorded traffic can lie for the verdicts ``y_pred``
+    on the held-out rows, given that no held-out verdict covers the heavily repeated flows that missed them.
+
+    Per class of the target, with R its rows in the cleaned files and U the copies of its heavily repeated flows
+    that are not held out (:class:`HeavyClass`): the held-out rows that hold a heavily repeated flow count with their
+    own copies, exactly; the other held-out rows give the class's rate on the remaining rows (weighted by
+    ``weights``, default :func:`traffic_weights`); and the U copies are counted as all misread (low) or all read
+    right (high). Accuracy weighs the classes by R, balanced accuracy averages them. Returns ``{"accuracy": (low,
+    high), "balanced_accuracy": (low, high)}``, or None when the run does not record its heavy-flow account. The range
+    leaves out the ordinary spread of the other rows (the standard errors cover that).
+    """
+    basis = _basis(run)
+    if basis.weights is None or basis.heavy is None:
+        return None
+    account, holds_heavy = basis.heavy
+    truth, guess = _codes(run.data.y_test), _codes(y_pred)
+    if truth.shape != guess.shape:
+        raise ValueError("y_pred must hold one verdict per held-out row.")
+    w = basis.weights if weights is None else _weights(weights, len(truth))
+    copies = np.asarray(run.data.test_copies, dtype=np.float64)
+    right = truth == guess
+    lows: list[float] = []
+    highs: list[float] = []
+    sizes: list[float] = []
+    for code, entry in enumerate(account):
+        inside = truth == code
+        heavy_rows, light = inside & holds_heavy, inside & ~holds_heavy
+        recorded = float(entry.recorded)
+        known, known_right = float(copies[heavy_rows].sum()), float(copies[heavy_rows & right].sum())
+        unknown = float(entry.unknown_copies)
+        rest = max(recorded - unknown - known, 0.0)
+        light_weight = float(w[light].sum())
+        if light_weight > 0:
+            low = (float(w[light & right].sum()) / light_weight * rest + known_right) / recorded
+            high = low + unknown / recorded
+        else:
+            low, high = known_right / recorded, (known_right + rest + unknown) / recorded
+        lows.append(min(max(low, 0.0), 1.0))
+        highs.append(min(max(high, 0.0), 1.0))
+        sizes.append(recorded)
+    size = np.asarray(sizes)
+    return {
+        "accuracy": (float(np.dot(size, lows) / size.sum()), float(np.dot(size, highs) / size.sum())),
+        "balanced_accuracy": (float(np.mean(lows)), float(np.mean(highs))),
+    }
+
+
+def flows_text(value: float) -> str:
+    """A count of ESTIMATED flows for reading, always marked as approximate and rounded to three significant
+    figures: ``"about 812"``, ``"about 4,630"``, ``"about 166,000"``, ``"about 1.3 million"``."""
+    number = float(value)
+    if not np.isfinite(number):
+        return "n/a"
+    if number < 1_000_000:
+        whole = int(round(number))
+        digits = 3 - len(str(abs(whole))) if whole else 0
+        return f"about {int(round(number, min(digits, 0))):,}"
+    return f"about {number / 1_000_000:,.1f} million"
+
+
+def traffic_sentence(summary: TrafficSummary) -> str:
+    """How the recorded-traffic estimate is made and what it stands for, in plain sentences.
+
+    It keeps the two counts apart: the rows of the cleaned files the held-out rows stand for (recorded copies,
+    exact) and the recorded flows they are estimated to stand for once the classes 01 Sample thinned are scaled
+    back up.
+    """
+    text = ("Each held-out row is weighted by the recorded flows it stands for: its copies in the cleaned files "
+            "(its exact repeats, and rows identical to it over the chosen columns), scaled up by how much 01 Sample "
+            f"thinned its class. The {summary.rows:,} held-out rows stand for {summary.repeats:,} rows of the "
+            f"cleaned files and for {flows_text(summary.flows)} recorded flows once the thinned classes are scaled "
+            "back up")
+    if summary.recorded and summary.test_share:
+        text += (f": an estimate of the held-out share ({summary.test_share:.0%}) of the {summary.recorded:,} "
+                 "flows the cleaned files hold in these classes")
+    return text + (". These readings estimate how each channel reads the traffic as recorded, not only its distinct "
+                   "flows.")
+
+
+def _heaviest_row_text(summary: TrafficSummary) -> str:
+    """The sentence on the heaviest held-out row (and on a few rows carrying half the weight)."""
+    if summary.largest_fraction < 1.0 - 1e-9:
+        made = (f"its {summary.largest_copies:,} copies in the cleaned files divided by its class's sampling share, "
+                f"{summary.largest_fraction:.3f}")
+    else:
+        made = f"its {summary.largest_copies:,} copies in the cleaned files (its class was taken whole)"
+    text = (f"The heaviest held-out row weighs {flows_text(summary.largest)} estimated recorded flows ({made}), "
+            f"{summary.largest_share:.1%} of the weight, so its verdict alone moves weighted accuracy by up to "
+            f"{summary.largest_share:.3f}")
+    if summary.balanced_swing > summary.largest_share:
+        text += f", and one row's verdict moves weighted balanced accuracy by up to {summary.balanced_swing:.3f}"
+    if summary.rows_for_half <= CONCENTRATED_ROWS:
+        rows = "row carries" if summary.rows_for_half == 1 else "rows carry"
+        text += f"; {summary.rows_for_half:,} {rows} half of all the weight"
+    text += "."
+    if summary.heavy_concentrated:
+        text += (" The range table counts every held-out row that holds a heavily repeated flow with its own copies, "
+                 "not scaled up, so where an estimate falls outside its range, the range is the better guide.")
+    return text
+
+
+def _heavy_text(summary: TrafficSummary) -> str:
+    """The sentences on heavily repeated flows that missed the held-out rows."""
+    parts = []
+    for entry in summary.heavy:
+        if entry.unknown_copies <= 0:
+            continue
+        missing = entry.flows - entry.held_out
+        if entry.held_out == 0:
+            held = "none of them is among the held-out rows, so no held-out verdict covers them"
+        else:
+            held = (f"only {entry.held_out:,} of them {'is' if entry.held_out == 1 else 'are'} among the held-out "
+                    f"rows, so no held-out verdict covers the other {missing:,}")
+        flows = "flow" if entry.flows == 1 else "flows"
+        parts.append(f"{entry.flows:,} {entry.name} {flows}, each recorded at least {entry.threshold:,} times, "
+                     f"{'makes' if entry.flows == 1 else 'make'} up {entry.copies:,} of the class's "
+                     f"{entry.recorded:,} rows in the cleaned files ({entry.copies / entry.recorded:.1%}), and "
+                     f"{held} ({entry.unknown_copies:,} rows, {entry.unknown_share:.1%} of the class)")
+    text = "Heavily repeated flows decide much of this estimate. " + "; ".join(parts) + ". "
+    return text + (f"Their verdicts alone could move accuracy over the recorded traffic by up to "
+                   f"{summary.heavy_accuracy_swing:.3f} and balanced accuracy by up to "
+                   f"{summary.heavy_balanced_swing:.3f}, which the standard errors cannot show (they see only the "
+                   "held-out rows). The range table gives where each channel's readings can lie; scoring the whole "
+                   "files at 05 Assay gives the actual figure.")
+
+
+def concentration_sentence(summary: TrafficSummary) -> str | None:
+    """A warning when the estimate rests on a few flows; None when the weight is spread out.
+
+    It names the heavily repeated flows of the cleaned files that missed the held-out rows (their verdicts are
+    unknown, see :func:`heavy_flow_bounds`) and the heaviest held-out row when one row's verdict can move a reading
+    by :data:`SWING_LIMIT` or more.
+    """
+    if not summary.concentrated:
+        return None
+    parts = []
+    if summary.heavy_concentrated:
+        parts.append(_heavy_text(summary))
+    if summary.rows_concentrated:
+        parts.append(_heaviest_row_text(summary))
+    if not summary.heavy:
+        parts.append("Whether heavily repeated flows land among the held-out rows is chance, and this run does not "
+                     "record those that did not, so these estimates are rough.")
+    elif not summary.heavy_concentrated:
+        parts.append("The estimates are rough.")
+    return " ".join(parts)
+
+
+@dataclass
+class TrafficEvaluation:
+    """Readings of one fitted channel weighted to the recorded traffic its held-out rows stand for (an estimate).
+
+    Attributes:
+        key: channel key.
+        metrics: as :func:`classification_metrics` (same keys), weighted (:func:`weighted_classification_metrics`).
+        per_class: see :func:`weighted_per_class_metrics` (``flows`` in place of ``support``).
+        confusion: estimated recorded flows (float64), rows = true class, columns = predicted class.
+        confusion_norm: ``confusion`` with each row divided by its total (row share).
+        flows: the sum of the weights (recorded flows the held-out rows stand for).
+        flows_by_class: summed weight per true class, in class-code order.
+        errors: rough standard errors of the weighted ``accuracy`` and ``balanced_accuracy``
+            (:func:`weighted_standard_errors`), from the spread among the held-out rows only.
+        bounds: ``(low, high)`` of ``accuracy`` and ``balanced_accuracy`` over the recorded traffic, given that no
+            held-out verdict covers the heavily repeated flows that missed the held-out rows
+            (:func:`heavy_flow_bounds`); empty when the run does not record its heavy-flow account.
+        classes: class names in code order.
+        n_test: number of held-out rows behind these readings.
+        seconds: time taken to compute them.
+    """
+
+    key: str
+    metrics: dict[str, float]
+    per_class: pd.DataFrame
+    confusion: np.ndarray
+    confusion_norm: np.ndarray
+    flows: float
+    flows_by_class: dict[str, float]
+    errors: dict[str, float] = field(default_factory=dict)
+    classes: tuple[str, ...] = ()
+    n_test: int = 0
+    seconds: float = 0.0
+    bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+    @property
+    def label(self) -> str:
+        """Badge and name of the channel, e.g. ``"CH2 XGBoost"``."""
+        return channel_label(self.key)
+
+
+def traffic_channel(run: "TrainingRun", key: str, weights: npt.ArrayLike | None = None) -> TrafficEvaluation:
+    """The recorded-traffic readings of channel ``key`` from its stored test-set predictions (nothing is fitted).
+
+    ``weights`` defaults to :func:`traffic_weights`. Raises ``KeyError`` for a channel the run does not hold and
+    ``ValueError`` for a channel that was not fitted or a run without weights.
+    """
+    started = time.perf_counter()
+    result = run.channels[key]
+    if getattr(result, "status", "ok") != "ok" or result.estimator is None:
+        raise ValueError(f"{channel_label(key)} was not fitted, so it has no readings.")
+    if weights is None:
+        basis = _basis(run)
+        weights = basis.weights
+        if weights is None:
+            raise ValueError(basis.reason or "No recorded-traffic weights.")
+    data = run.data
+    classes = tuple(str(c) for c in data.classes)
+    k = len(classes)
+    y_test = _codes(data.y_test)
+    w = _weights(weights, len(y_test))
+    proba, y_pred = _channel_scores(result, np.asarray(data.X_test), k)
+    matrix = weighted_confusion(y_test, y_pred, k, w)
+    return TrafficEvaluation(
+        key=key,
+        metrics=weighted_classification_metrics(y_test, y_pred, proba, k, w),
+        per_class=weighted_per_class_metrics(y_test, y_pred, proba, classes, w),
+        confusion=matrix,
+        confusion_norm=normalise_rows(matrix),
+        flows=float(w.sum()),
+        flows_by_class={name: float(w[y_test == i].sum()) for i, name in enumerate(classes)},
+        errors=weighted_standard_errors(y_test, y_pred, w),
+        classes=classes,
+        n_test=int(len(y_test)),
+        seconds=time.perf_counter() - started,
+        bounds=heavy_flow_bounds(run, y_pred, w) or {},
+    )
+
+
+def traffic_readings(run: "TrainingRun") -> dict[str, TrafficEvaluation] | None:
+    """Recorded-traffic readings of every fitted channel of ``run`` (channel order), or None when unavailable.
+
+    Computed once per channel from the stored test-set probabilities and kept on the run (``run.traffic_evaluations``)
+    like :func:`evaluate_run`'s readings, so later calls from any page or session return them as they are (the
+    weights behind them are kept on the run too, so a later call computes nothing).
+    :func:`traffic_unavailable_reason` says why None was returned. Thread-safe.
+    """
+    weights = _basis(run).weights
+    if weights is None:
+        return None
+    keys = _ordered(list(run.ok_channels()))
+    kept = getattr(run, TRAFFIC_ATTR, None)
+    if isinstance(kept, dict) and all(key in kept for key in keys):
+        return {key: kept[key] for key in keys}
+    with _EVAL_LOCK:
+        cache = getattr(run, TRAFFIC_ATTR, None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(run, TRAFFIC_ATTR, cache)
+        keys = _ordered(list(run.ok_channels()))
+        for key in keys:
+            if key not in cache:
+                cache[key] = traffic_channel(run, key, weights)
+        return {key: cache[key] for key in keys if key in cache}
+
+
+def cached_traffic_readings(run: "TrainingRun") -> dict[str, TrafficEvaluation] | None:
+    """The recorded-traffic readings already kept on ``run``, or None when none were computed yet."""
+    cache = getattr(run, TRAFFIC_ATTR, None)
+    return dict(cache) if isinstance(cache, dict) and cache else None
+
+
+#: Standard-error columns of the recorded-traffic leaderboard: (key of ``TrafficEvaluation.errors``, column title).
+TRAFFIC_ERROR_COLUMNS: tuple[tuple[str, str], ...] = (("balanced_accuracy", "Balanced accuracy s.e."),
+                                                      ("accuracy", "Accuracy s.e."))
+
+
+def traffic_leaderboard(traffic: Mapping[str, TrafficEvaluation], run: "TrainingRun",
+                        evals: Mapping[str, ChannelEvaluation] | None = None) -> pd.DataFrame:
+    """:func:`leaderboard` over the recorded-traffic readings, best weighted balanced accuracy first.
+
+    The columns are those of :func:`leaderboard` with the two standard errors of :data:`TRAFFIC_ERROR_COLUMNS`
+    after the scores. The scores and ``Gap to best`` are the weighted ones; fit time, rows used and training rows
+    come from the run, and ``Flows/s`` and ``Single-flow ms`` from ``evals`` (the distinct-flow readings) when given,
+    else NaN (scoring speed does not depend on how the rows are counted).
+    """
+    scores = score_columns(run.request.mode)
+    rows: list[dict[str, Any]] = []
+    for key in _ordered(list(traffic)):
+        reading = traffic[key]
+        result = run.channels.get(key)
+        timing = (evals or {}).get(key)
+        row: dict[str, Any] = {"key": key, "Channel": channel_label(key)}
+        for metric, title in scores:
+            row[title] = float(reading.metrics.get(metric, float("nan")))
+        for metric, title in TRAFFIC_ERROR_COLUMNS:
+            row[title] = float(reading.errors.get(metric, float("nan")))
+        row["Fit s"] = float(getattr(result, "fit_seconds", float("nan")))
+        row["Flows/s"] = float(timing.throughput_fps) if timing is not None else float("nan")
+        row["Single-flow ms"] = float(timing.single_flow_ms) if timing is not None else float("nan")
+        row["Rows used"] = int(getattr(result, "rows_used", 0) or 0)
+        row["Training rows"] = int(getattr(result, "rows_available", 0) or 0)
+        rows.append(row)
+    columns = ["key", "Channel", *[title for _, title in scores], *[title for _, title in TRAFFIC_ERROR_COLUMNS],
+               *LEADERBOARD_TAIL]
+    frame = pd.DataFrame(rows, columns=columns)
+    if frame.empty:
+        return frame
+    frame = frame.sort_values("Balanced accuracy", ascending=False, kind="stable", na_position="last")
+    frame["Gap to best"] = float(frame["Balanced accuracy"].max()) - frame["Balanced accuracy"]
+    return frame.reset_index(drop=True)[columns]
+
+
+def traffic_metric_columns(mode: str) -> list[tuple[str, str]]:
+    """(metric key, export column) pairs of the recorded-traffic readings for ``mode``, e.g.
+    ``("balanced_accuracy", "traffic_balanced_accuracy")``, in leaderboard order."""
+    return [(metric, f"{TRAFFIC_PREFIX}{metric}") for metric, _ in score_columns(mode)]
+
+
+#: Export columns of the standard errors: (key of ``TrafficEvaluation.errors``, column).
+TRAFFIC_ERROR_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("balanced_accuracy", f"{TRAFFIC_PREFIX}balanced_accuracy_se"), ("accuracy", f"{TRAFFIC_PREFIX}accuracy_se"))
+#: Export columns of the heavy-flow ranges: (key of ``TrafficEvaluation.bounds``, low column, high column).
+TRAFFIC_BOUND_EXPORTS: tuple[tuple[str, str, str], ...] = (
+    ("balanced_accuracy", f"{TRAFFIC_PREFIX}balanced_accuracy_low", f"{TRAFFIC_PREFIX}balanced_accuracy_high"),
+    ("accuracy", f"{TRAFFIC_PREFIX}accuracy_low", f"{TRAFFIC_PREFIX}accuracy_high"))
+
+
+def bound_values(bounds: Mapping[str, Any] | None) -> dict[str, float]:
+    """The heavy-flow ranges as export columns (:data:`TRAFFIC_BOUND_EXPORTS`), NaN where a range is missing."""
+    out: dict[str, float] = {}
+    for metric, low, high in TRAFFIC_BOUND_EXPORTS:
+        pair = (bounds or {}).get(metric)
+        out[low], out[high] = (float(pair[0]), float(pair[1])) if pair is not None else (float("nan"), float("nan"))
+    return out
+
+
+def traffic_columns(traffic: Mapping[str, TrafficEvaluation], mode: str) -> pd.DataFrame:
+    """One row per channel: ``key``, :data:`TRAFFIC_FLOWS_COLUMN`, a ``traffic_<metric>`` column per score of
+    :func:`score_columns`, the two standard errors (``traffic_balanced_accuracy_se``, ``traffic_accuracy_se``) and
+    the heavy-flow ranges of :data:`TRAFFIC_BOUND_EXPORTS` (NaN when the run does not record them), channel order,
+    for joining onto a leaderboard export."""
+    pairs = traffic_metric_columns(mode)
+    rows = []
+    for key in _ordered(list(traffic)):
+        reading = traffic[key]
+        row: dict[str, Any] = {"key": key, TRAFFIC_FLOWS_COLUMN: float(reading.flows)}
+        for metric, column in pairs:
+            row[column] = float(reading.metrics.get(metric, float("nan")))
+        for metric, column in TRAFFIC_ERROR_EXPORTS:
+            row[column] = float(reading.errors.get(metric, float("nan")))
+        row.update(bound_values(reading.bounds))
+        rows.append(row)
+    bound_columns = [column for _, low, high in TRAFFIC_BOUND_EXPORTS for column in (low, high)]
+    return pd.DataFrame(rows, columns=["key", TRAFFIC_FLOWS_COLUMN, *[c for _, c in pairs],
+                                       *[c for _, c in TRAFFIC_ERROR_EXPORTS], *bound_columns])
+
+
+def traffic_per_class_frame(traffic: Mapping[str, TrafficEvaluation]) -> pd.DataFrame:
+    """The per-class recorded-traffic readings of every channel stacked into one table (channel, then class order):
+    ``key``, ``Channel`` and :data:`TRAFFIC_PER_CLASS_COLUMNS`."""
+    parts = []
+    for key in _ordered(list(traffic)):
+        table = traffic[key].per_class.copy()
+        table.insert(0, "Channel", channel_label(key))
+        table.insert(0, "key", key)
+        parts.append(table)
+    if not parts:
+        return pd.DataFrame(columns=["key", "Channel", *TRAFFIC_PER_CLASS_COLUMNS])
     return pd.concat(parts, ignore_index=True)
 
 
@@ -1153,12 +2009,17 @@ def forget_task(task_id: str) -> None:
 
 
 __all__ = [
-    "CHANNEL_ORDER", "CVPlan", "ChannelEvaluation", "EvaluationTask", "TaskSnapshot", "cached_evaluations",
-    "channel_label", "class_curves", "classification_metrics", "cross_validate_run", "cv_fold_frame",
-    "downsample_curve", "estimate_cv_seconds", "evaluate_channel", "evaluate_run", "forget_task", "get_task",
-    "has_test_rows", "held_out_counts", "held_out_repeats", "leaderboard", "native_importance", "normalise_rows",
-    "per_class_frame",
+    "CHANNEL_ORDER", "CVPlan", "ChannelEvaluation", "EvaluationTask", "TRAFFIC_FLOWS_COLUMN", "TRAFFIC_PREFIX",
+    "TaskSnapshot", "TrafficEvaluation", "TrafficSummary", "cached_evaluations", "cached_traffic_readings",
+    "channel_label", "class_curves", "classification_metrics", "concentration_sentence", "cross_validate_run",
+    "cv_fold_frame", "downsample_curve", "estimate_cv_seconds", "evaluate_channel", "evaluate_run", "flows_text",
+    "forget_task", "get_task", "has_test_rows", "held_out_counts", "held_out_repeats", "leaderboard",
+    "native_importance", "normalise_rows", "per_class_frame",
     "per_class_metrics", "permutation_importance_for", "permutation_plan", "plan_cross_validation",
-    "quick_metrics", "remember_cross_validation", "remember_permutation", "score_columns",
+    "quick_metrics", "remember_cross_validation", "remember_permutation", "sampling_fractions", "score_columns",
     "repeats_sentence", "single_flow_latency_ms", "stored_cross_validation", "stored_permutations",
+    "traffic_channel", "traffic_columns", "traffic_leaderboard", "traffic_metric_columns", "traffic_per_class_frame",
+    "traffic_readings", "traffic_sentence", "traffic_summary", "traffic_unavailable_reason", "traffic_weights",
+    "weighted_classification_metrics", "weighted_confusion", "weighted_per_class_metrics",
+    "weighted_standard_errors",
 ]

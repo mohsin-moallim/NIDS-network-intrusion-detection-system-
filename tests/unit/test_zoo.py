@@ -67,8 +67,9 @@ def test_full_profile_hyperparameters() -> None:
 
 def test_test_profile_shrinks_every_model() -> None:
     ctx = BuildContext(n_classes=3, seed=1, profile="test", svm_cap=20_000)
-    assert build_estimator("forest", ctx).named_steps["model"].n_estimators == 20
-    assert build_estimator("xgboost", ctx).named_steps["model"].n_estimators == 30
+    forest = build_estimator("forest", ctx).named_steps["model"]
+    assert (forest.n_estimators, forest.n_jobs) == (20, 1)  # one thread: no thread pool for every small call
+    assert build_estimator("xgboost", ctx).named_steps["model"].n_estimators == 10
     mlp = build_estimator("mlp", ctx).named_steps["model"]
     assert mlp.hidden_layer_sizes == (32,) and mlp.max_iter == 15
     assert build_estimator("logreg", ctx).named_steps["model"].max_iter == 200

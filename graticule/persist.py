@@ -637,6 +637,13 @@ def _richer_metrics(run: TrainingRun) -> dict[str, dict[str, Any]]:
     probabilities, when the module offers ``classification_metrics``: no model is asked to predict and nothing is
     timed, so saving stays quick. Both give the same numbers. Any failure leaves that channel with the headline
     metrics only.
+
+    When the run can be weighted to its recorded traffic (:func:`graticule.evaluate.traffic_readings`, computed once
+    per run from the stored probabilities), each channel's entry also gets the weighted readings under
+    ``traffic_<metric>`` keys, their standard errors (``traffic_accuracy_se``, ``traffic_balanced_accuracy_se``),
+    the heavy-flow ranges (``traffic_accuracy_low``/``_high``, ``traffic_balanced_accuracy_low``/``_high``, when the
+    run records its heavy-flow account) and ``traffic_flows_represented``: optional keys that older bundles simply
+    lack.
     """
     from graticule import evaluate
 
@@ -657,6 +664,18 @@ def _richer_metrics(run: TrainingRun) -> dict[str, dict[str, Any]]:
             out[key] = _plain(compute(run.data.y_test, result.y_pred, result.proba, run.data.n_classes))
         except Exception:  # noqa: BLE001 - the headline metrics are enough to save a run
             continue
+    try:
+        traffic = evaluate.traffic_readings(run) if has_rows else None
+    except Exception:  # noqa: BLE001 - the estimate is optional; a run saves without it
+        traffic = None
+    for key, reading in (traffic or {}).items():
+        if key in out:
+            out[key].update(_plain({evaluate.TRAFFIC_FLOWS_COLUMN: reading.flows,
+                                    **{f"{evaluate.TRAFFIC_PREFIX}{name}": value
+                                       for name, value in reading.metrics.items()},
+                                    **{column: reading.errors.get(name)
+                                       for name, column in evaluate.TRAFFIC_ERROR_EXPORTS},
+                                    **(evaluate.bound_values(reading.bounds) if reading.bounds else {})}))
     return out
 
 
@@ -1453,7 +1472,9 @@ def restore_run(bundle: LoadedBundle, data: TrainingData | None = None, *,
     only). Without ``data`` the run carries empty matrices with the bundle's classes, feature names and feature
     choice (``has_test_rows`` is False), channels have empty predictions, and the reference sample is made of
     quantile vectors. The feature quantiles always come from the bundle; timings, metrics and the reports of the
-    fit (row counts, de-duplication, Top-K ranking, how long the matrices took) are those saved. CH3 saved by choice
+    fit (row counts, de-duplication, Top-K ranking, how long the matrices took) are those saved (a bundle saved
+    before the 01 Sample shares and the heavy-flow account were recorded takes them from the rebuilt sample, so its
+    recorded-traffic estimate can be computed as well). CH3 saved by choice
     comes back as an ordinary ``"ok"`` channel like the others; left out (the default), it comes back with status
     ``"not_saved"`` and a note saying why. ``progress`` receives (message, fraction) before each channel scores the
     held-out rows and after every block of rows it scores (the kernel SVM can take as long as it did at fit time).
@@ -1473,7 +1494,13 @@ def restore_run(bundle: LoadedBundle, data: TrainingData | None = None, *,
         reference = np.array(data.X_train[ref_rows], dtype=np.float32, copy=True)
         saved_reports = manifest.get("reports")
         if isinstance(saved_reports, Mapping) and saved_reports:
-            data = replace(data, reports=dict(saved_reports))
+            kept = dict(saved_reports)
+            # A bundle saved before the 01 Sample shares (or the heavy-flow account) were recorded: the rebuilt
+            # sample is the very same one (its fingerprint was checked), so its reports are those of the fit.
+            for name in ("sampling", "heavy_flows"):
+                if name not in kept and isinstance((data.reports or {}).get(name), Mapping):
+                    kept[name] = dict(data.reports[name])
+            data = replace(data, reports=kept)
     entries = manifest.get("channels") or {}
     keys = _ordered(entries)
     channels: dict[str, ChannelResult] = {}

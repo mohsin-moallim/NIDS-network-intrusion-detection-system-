@@ -20,13 +20,22 @@ from streamlit.testing.v1 import AppTest
 
 import graticule.settings as settings_mod
 from graticule import persist
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import PreparedDataset
 from graticule.history import COLUMNS, RunHistory, run_summary
 from graticule.models import train
 from graticule.models.jobs import get_job
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from graticule.models.train import TrainingRun
 from graticule.models.zoo import MODEL_KEYS
-from tests.ui.harness import draw_synthetic_sample, errors, fresh_caches, goto, new_app  # noqa: F401
+from tests.ui.harness import (  # noqa: F401
+    app_with_run,
+    app_with_sample,
+    drawn_sample,
+    errors,
+    fit_synthetic,
+    fresh_caches,
+    goto,
+    new_app,
+)
 from ui import state
 from ui.pages import logbook
 
@@ -57,37 +66,32 @@ def _fit_calls() -> int:
 
 
 def _fitted_app() -> tuple[AppTest, str]:
-    """A session that drew a small synthetic sample at 01 Sample and fitted every channel at 02 Fit, now at the
-    Logbook (the whole way through the stations' forms)."""
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
-    at.button(key="fit_submit").click().run()
+    """A Logbook session holding a small synthetic sample and a fit of every channel, as right after a fit at 02 Fit:
+    the run is in the history (as 02 Fit records it when the run is adopted), not saved.
+
+    The fit is made once per session (``fit_synthetic``, shared with the 03 Measure and 04 Probe tests); a fit
+    through the 02 Fit form, and the single history line it records, are checked by
+    ``tests/ui/test_fit_page.py::test_a_fit_through_the_form_stores_one_run``.
+    """
+    prepared, run = fit_synthetic()
+    RunHistory().record(run)
+    at = app_with_run(run, prepared, key="logbook").run()
     assert not errors(at), errors(at)
-    run_id = at.session_state[state.LAST_RUN_ID]
-    goto(at, "logbook")
-    assert not errors(at), errors(at)
-    return at, run_id
+    return at, run.run_id
 
 
 @pytest.fixture(scope="module")
 def quick_fit() -> tuple[PreparedDataset, TrainingRun]:
-    """A small synthetic sample and a fit of the two quick channels, made once for the tests that need any fit."""
-    prepared = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=2_000, row_budget=1_600, seed=42))
-    request = TrainRequest(profile="test", channels=tuple(QUICK))
-    run = train_all(build_training_data(prepared, request), request, data_request=prepared.request,
-                    dataset_fingerprint=prepared.fingerprint)
-    return prepared, run
+    """The small synthetic sample 01 Sample draws and a fit of the two quick channels, made once for the tests
+    that need any fit."""
+    return fit_synthetic(flows=2_000, budget=1_600, channels=tuple(QUICK))
 
 
 @pytest.fixture(scope="module")
 def svm_fit() -> tuple[PreparedDataset, TrainingRun]:
-    """A small synthetic sample and a quick fit that includes CH3 (made once for the opt-in test)."""
-    prepared = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=2_000, row_budget=1_600, seed=42))
-    request = TrainRequest(profile="test", channels=tuple(WITH_SVM))
-    run = train_all(build_training_data(prepared, request), request, data_request=prepared.request,
-                    dataset_fingerprint=prepared.fingerprint)
-    return prepared, run
+    """The small synthetic sample 01 Sample draws and a quick fit that includes CH3 (made once for the opt-in
+    tests)."""
+    return fit_synthetic(flows=2_000, budget=1_600, channels=tuple(WITH_SVM))
 
 
 def _quick_app(quick_fit: tuple[PreparedDataset, TrainingRun]) -> tuple[AppTest, str]:
@@ -118,7 +122,7 @@ def test_without_a_run_the_logbook_points_to_02_fit(fresh_caches: None) -> None:
 def test_save_list_load_delete_and_clear(fresh_caches: None) -> None:
     at, run_id = _fitted_app()
 
-    # Every finished fit is in the history (recorded once, when the run was adopted).
+    # The fit's history line is listed.
     history = _table(at, "Train rows")
     assert history["Run"].tolist() == [run_id]
     assert history["Channels"].tolist() == ["CH1 CH2 CH3 CH4 CH5"]
@@ -142,8 +146,11 @@ def test_save_list_load_delete_and_clear(fresh_caches: None) -> None:
     assert "Fit it again" not in saved_message and "Fit it again" not in _text(at)
     assert "lb_save" not in [b.key for b in at.button] and box.key not in [c.key for c in at.checkbox]
     assert str(folder) in _text(at)
-    assert _table(at, "Train rows")["Saved to"].tolist() == [str(folder)]
-    saved = _table(at, "Folder")
+    assert _table(at, "Train rows")["Saved"].tolist() == ["yes"]
+    assert RunHistory().get(run_id)["saved_path"] == str(folder)  # the full path is kept (and in the CSV)
+    saved = _table(at, "Check")
+    assert "Folder" not in saved.columns  # the folder is named after the run, said once under the table
+    assert f"Saved sets are kept in {folder.parent}, each in a folder named after its run." in _text(at)
     assert saved["Run"].tolist() == [run_id] and saved["Channels"].tolist() == ["CH1 CH2 CH4 CH5"]
     assert saved["Check"].tolist() == ["manifest intact"] and saved["Training rows inside"].tolist() == [0]
 
@@ -228,7 +235,7 @@ def test_ch3_is_saved_only_when_ticked_and_loads_back_as_an_ordinary_channel(
     assert "is not kept in saved sets" not in message
     assert f"This set holds {vectors:,} training rows (CH3)" in _text(at)
     assert state.unsaved_channel_note(run) == ""
-    saved = _table(at, "Folder")
+    saved = _table(at, "Check")
     assert saved["Channels"].tolist() == ["CH1 CH3 CH5"] and saved["Training rows inside"].tolist() == [vectors]
 
     # Loaded back: CH3 is verified and restored like the other channels, nothing is fitted, and the set's rows
@@ -308,9 +315,11 @@ def test_loading_over_an_unsaved_fit_asks_first(fresh_caches: None,
     assert not errors(at), errors(at)
     assert at.session_state[state.RUN].run_id == run_id and "lb_load_save" not in [b.key for b in at.button]
 
-    # A different sample drawn since: loading rebuilds the run's own sample and says which one it replaced.
-    draw_synthetic_sample(at, flows=2_000, budget=1_200)
+    # A different sample drawn since (as Draw sample leaves it): loading rebuilds the run's own sample and says
+    # which one it replaced.
+    at.session_state[state.PREPARED] = drawn_sample(flows=2_000, budget=1_200)
     drawn = at.session_state[state.PREPARED].fingerprint
+    assert drawn != fitted.dataset_fingerprint
     goto(at, "logbook")
     at.button(key="lb_load").click().run()
     assert not errors(at), errors(at)
@@ -353,7 +362,7 @@ def test_save_then_load_follows_the_ch3_box(fresh_caches: None,
     assert f"Loaded run {copy_id} from disk." in message
     loaded = at.session_state[state.RUN]
     assert loaded.run_id == copy_id and loaded.channels["svm"].status == persist.NOT_SAVED
-    table = _table(at, "Folder").set_index("Run")
+    table = _table(at, "Check").set_index("Run")
     assert table.loc[run_id, "Training rows inside"] == vectors and table.loc[copy_id, "Training rows inside"] == 0
     assert _fit_calls() == fits
 
@@ -443,7 +452,7 @@ def test_a_damaged_bundle_is_refused_and_changes_nothing(fresh_caches: None,
     manifest["best_balanced_accuracy"] = 0.999
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     at.run()
-    assert _table(at, "Folder")["Check"].iloc[0].startswith("refused: its manifest was changed")
+    assert _table(at, "Check")["Check"].iloc[0].startswith("refused: its manifest was changed")
     at.button(key="lb_load").click().run()
     assert "changed or damaged after saving" in " ".join(e.value for e in at.error)
 
@@ -484,10 +493,8 @@ def test_a_version_change_loads_but_is_marked_not_verified(fresh_caches: None,
 
 def test_a_fit_no_page_adopts_is_still_in_the_history(fresh_caches: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """A background fit records itself when it ends, even if its tab is gone before any page adopts it."""
-    at = new_app().run()
-    draw_synthetic_sample(at, flows=2_000, budget=1_200)
-    goto(at, "fit")
-    at.multiselect(key="fit_channels").set_value(QUICK)
+    at = app_with_sample(drawn_sample(flows=2_000, budget=1_200), "fit").run()
+    at.pills(key="fit_channels").set_value(QUICK)
     monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
     at.button(key="fit_submit").click().run()
     job = get_job(at.session_state[state.JOB_ID])

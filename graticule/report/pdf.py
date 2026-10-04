@@ -8,8 +8,10 @@
   01 Sample account of the run's own sample when it is still in memory, else from the run's reports);
 * the fit settings: mode, feature set, weighting, SVM cap and rows used, test share, seed, bad-value strategy, the
   columns and every channel's notes;
-* the readings: the leaderboard (balanced accuracy first, plus the consensus of all channels), its dot plot and
-  the per-class table of the best channel;
+* the readings: the leaderboard (balanced accuracy first, plus the consensus of all channels), its dot plot, a
+  compact table of the same readings weighted to the recorded traffic under its own heading (an estimate, when the
+  run allows it; with the range heavily repeated flows leave open when they decide much of it) and the per-class
+  table of the best channel;
 * charts: every channel's confusion matrix, ROC and precision-recall curves (overlaid for binary runs, per class
   for the best channel otherwise), feature importance and timing;
 * optional sections when their results exist: cross-validation, the last Assay batch and the last Sweep;
@@ -48,7 +50,7 @@ from fpdf.fonts import FontFace
 from graticule import APP_NAME, TAGLINE, __version__, evaluate, viz
 from graticule.models.jobs import CancelToken, TrainingCancelled
 from graticule.models.verdict import ALERT_RULE
-from graticule.report.exports import belongs_to_run, consensus_metrics
+from graticule.report.exports import belongs_to_run, consensus_metrics, consensus_traffic_metrics
 from graticule.schema import CURATED
 from graticule.theme import CHANNEL_BY_KEY, FONT_BODY, FONT_FILES, FONT_HEADING, FONT_MONO, LIGHT, score_text
 
@@ -114,6 +116,12 @@ LEADERBOARD_BINARY: tuple[str, ...] = ("Balanced accuracy", "Accuracy", "Precisi
                                        "F1 (attack)", "ROC-AUC", "Average precision")
 LEADERBOARD_MULTICLASS: tuple[str, ...] = ("Balanced accuracy", "Accuracy", "F1 macro", "F1 weighted",
                                            "Precision macro", "Recall macro", "ROC-AUC", "Average precision")
+#: Columns of the compact recorded-traffic table, per mode (a subset of the leaderboard's).
+TRAFFIC_BINARY: tuple[str, ...] = ("Balanced accuracy", "Accuracy", "Precision (attack)", "Recall (attack)",
+                                   "F1 (attack)", "ROC-AUC")
+TRAFFIC_MULTICLASS: tuple[str, ...] = ("Balanced accuracy", "Accuracy", "F1 macro", "F1 weighted", "ROC-AUC")
+#: Short headings of the standard errors that close the recorded-traffic table.
+TRAFFIC_ERROR_HEADS: dict[str, str] = {"balanced_accuracy": "Bal. s.e.", "accuracy": "Acc. s.e."}
 #: Short table headings of those columns (any column without one keeps its own title).
 SHORT_HEADS: dict[str, str] = {
     "Balanced accuracy": "Bal. acc.", "Accuracy": "Accuracy", "Precision (attack)": "Precision",
@@ -1075,9 +1083,9 @@ class _Builder:
             rows.append([f"Consensus ({consensus['voters']})",
                          *[_score(consensus.get(metric_of.get(c, ""))) for c in columns],
                          _score(best - float(consensus["balanced_accuracy"]))])
+            bold.append(len(rows) - 1)
         if any(len(row) != len(heads) + 1 for row in rows):  # a guard: never print numbers under the wrong names
             raise RuntimeError("The leaderboard table of the record has rows that do not match its headings.")
-            bold.append(len(rows) - 1)
         self.table(["Channel", *heads], rows, widths=[34] + [12] * (len(heads)),
                    align=["LEFT"] + ["RIGHT"] * len(heads), bold_rows=bold, size=7.6)
         if consensus is not None:
@@ -1086,6 +1094,7 @@ class _Builder:
                       "held-out rows.")
         self.chart("readings by channel", lambda: viz.leaderboard_chart(
             board, "light", subtitle=f"Each mark is one channel's reading on {total:,} held-out rows."))
+        self._traffic_table()
         best = self._best()
         if best is not None and best[0] in self.evals:
             key = best[0]
@@ -1100,6 +1109,73 @@ class _Builder:
                        marks=["normal" if viz.kind_of(str(c)) == viz.KIND_NORMAL else "attack" for c in table["class"]])
             self.note("ROC-AUC and average precision score each class against all the others (n/a when a class "
                       "has no held-out rows).")
+
+    def _traffic_table(self) -> None:
+        """The compact "Recorded traffic (estimate)" table under the leaderboard, or a note saying why it is absent.
+
+        Each channel's readings (and the consensus's) weighted to the recorded traffic the held-out rows stand for
+        (:func:`graticule.evaluate.traffic_readings`), in the leaderboard's row order, with how they are made. When
+        heavily repeated flows that missed the held-out rows decide much of the estimate, a caution and a second
+        table follow: where each channel's accuracy and balanced accuracy can lie
+        (:func:`graticule.evaluate.heavy_flow_bounds`).
+        """
+        run = self.run
+        self.subheading("Recorded traffic (estimate)")
+        traffic = evaluate.traffic_readings(run)
+        summary = evaluate.traffic_summary(run)
+        if not traffic or summary is None:
+            reason = evaluate.traffic_unavailable_reason(run) or "its weights could not be computed."
+            self.note(f"Not available for this run: {reason} The readings above count each distinct held-out flow "
+                      "once.")
+            return
+        wanted = TRAFFIC_BINARY if run.request.mode == "binary" else TRAFFIC_MULTICLASS
+        metric_of = {title: metric for metric, title in evaluate.score_columns(run.request.mode)}
+        columns = [c for c in wanted if c in metric_of]
+        errors = [metric for metric, _ in evaluate.TRAFFIC_ERROR_COLUMNS]
+
+        def cells(metrics: Mapping[str, Any], spread: Mapping[str, Any]) -> list[str]:
+            return [*[_score(metrics.get(metric_of[c])) for c in columns], *[_score(spread.get(m)) for m in errors]]
+
+        rows: list[list[str]] = []
+        ranges: list[list[str]] = []
+
+        def span(metrics: Mapping[str, Any], bounds: Mapping[str, Any]) -> list[str]:
+            out = []
+            for metric in ("balanced_accuracy", "accuracy"):
+                low, high = bounds.get(metric) or (None, None)
+                out += [_score(metrics.get(metric)), _score(low), _score(high)]
+            return out
+
+        for key in [str(k) for k in self.board["key"]]:
+            reading = traffic.get(key)
+            if reading is not None:
+                rows.append([evaluate.channel_label(key), *cells(reading.metrics, reading.errors)])
+                ranges.append([evaluate.channel_label(key), *span(reading.metrics, reading.bounds)])
+        bold: list[int] = []
+        combined = consensus_traffic_metrics(run, list(self.evals))
+        if combined is not None:
+            rows.append([f"Consensus ({combined['voters']})", *cells(combined, combined["errors"])])
+            ranges.append([f"Consensus ({combined['voters']})", *span(combined, combined.get("bounds") or {})])
+            bold.append(len(rows) - 1)
+        heads = [SHORT_HEADS.get(c, c) for c in columns] + [TRAFFIC_ERROR_HEADS[m] for m in errors]
+        if any(len(row) != len(heads) + 1 for row in rows):  # never print numbers under the wrong names
+            raise RuntimeError("The recorded-traffic table of the record has rows that do not match its headings.")
+        self.table(["Channel", *heads], rows, widths=[34] + [12] * len(heads),
+                   align=["LEFT"] + ["RIGHT"] * len(heads), bold_rows=bold, size=7.6)
+        note = (f"{evaluate.traffic_sentence(summary)} Rows dropped for bad values are not counted. s.e.: rough "
+                "standard error from the spread among the held-out rows only; it cannot see heavily repeated flows "
+                "that missed them. Rows follow the distinct-flow leaderboard; every chart of this record counts each "
+                "distinct flow once.")
+        self.note(note)
+        warning = evaluate.concentration_sentence(summary)
+        if warning:
+            self.note(f"Caution. {warning}")
+        if summary.heavy_concentrated and all(len(r) == 7 for r in ranges):
+            self.table(["Channel", "Bal. acc.", "Bal. low", "Bal. high", "Accuracy", "Acc. low", "Acc. high"],
+                       ranges, widths=[34] + [12] * 6, align=["LEFT"] + ["RIGHT"] * 6, bold_rows=bold, size=7.6)
+            self.note("Low and high: the reading over the recorded traffic if every heavily repeated flow that "
+                      "missed the held-out rows were misread, or read right, with the other flows read as the "
+                      "held-out rows suggest.")
 
     def _recorded_readings(self) -> None:
         """Readings saved with a run that was loaded without its held-out rows."""
@@ -1358,11 +1434,12 @@ class _Builder:
         items += [
             "Labels are taken from the data as they are: any labelling mistakes in the source pass straight into "
             "the readings.",
-            "Exact repeats were removed before the split (within and across files, then again over the chosen "
-            "columns), but near-identical flows can still sit on both sides of it and flatter the readings.",
+            "Repeats were removed before the split (exact ones within and across files, then rows identical over the "
+            "chosen columns), but near-identical flows can still sit on both sides of it and flatter the readings.",
             "Readings count each distinct flow once, however often it was recorded. A whole file scored row by "
             "row counts every repeat, so a channel that misses a much-repeated flow reads lower on the file than "
-            "on its held-out rows.",
+            "on its held-out rows; the recorded-traffic table under the leaderboard estimates that effect by "
+            "weighting each held-out row with the recorded flows it stands for.",
             "Accuracy follows the largest class; balanced accuracy weighs every class equally, which is why it is "
             "listed first.",
             "Probabilities are those of each model as fitted. Only CH3 is calibrated (on training rows it did not "
@@ -1371,8 +1448,13 @@ class _Builder:
         ]
         repeats = evaluate.held_out_repeats(run)
         if repeats and repeats["flows"] > repeats["rows"]:
-            items.append(f"The {repeats['rows']:,} held-out rows stand for {repeats['flows']:,} recorded flows once "
-                         f"repeats are counted; the most repeated one for {repeats['largest']:,}.")
+            text = (f"The {repeats['rows']:,} held-out rows stand for {repeats['flows']:,} rows of the cleaned files "
+                    f"once repeats are counted (the most repeated one for {repeats['largest']:,})")
+            summary = evaluate.traffic_summary(run)
+            if summary is not None:
+                text += (f", and for {evaluate.flows_text(summary.flows)} estimated recorded flows once the classes "
+                         "01 Sample thinned are scaled back up")
+            items.append(text + ".")
         overlap = (run.data.reports or {}).get("topk_overlap")
         if isinstance(overlap, Mapping) and overlap.get("test_rows"):
             items.append(f"Top-K columns: {int(overlap.get('test_rows_seen_in_train', 0)):,} of "

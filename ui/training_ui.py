@@ -53,6 +53,8 @@ READING_COLUMNS: tuple[str, ...] = ("Channel", "Status", "Rows used", "Fit s", "
                                     "Balanced accuracy", "Macro F1", "Notes")
 #: Attribute of a run object holding its readings table (see :func:`kept_readings`).
 READINGS_ATTR = "fit_readings_table"
+#: Characters with a meaning in Markdown, escaped by :func:`plain_markdown`.
+MARKDOWN_SPECIALS = frozenset("\\`*_{}[]<>()#+-.!|$~")
 
 
 def training_profile() -> Profile:
@@ -418,15 +420,37 @@ def _sample_check(run: TrainingRun, prepared: PreparedDataset | None) -> None:
                    f"fit on it. Until then every later station keeps reading run {run.run_id}.")
 
 
+def plain_markdown(text: str) -> str:
+    """``text`` with every Markdown control character escaped, so it shows exactly as written (feature names such
+    as ``Init_Win_bytes_forward`` keep their underscores)."""
+    return "".join("\\" + ch if ch in MARKDOWN_SPECIALS else ch for ch in str(text))
+
+
+def channel_notes(readings: pd.DataFrame, run: TrainingRun) -> list[str]:
+    """``"CH2 XGBoost: Early stopping ..."`` for every FITTED channel with notes (a channel that failed is
+    explained by :func:`run_notes`), in the table's order."""
+    out = []
+    for key in ordered_channels(run):
+        result = run.channels[key]
+        note = _channel_notes(result)
+        if result.status == "ok" and note:
+            out.append(f"{channel_label(key)}: {note}")
+    return out
+
+
 def readings_panel(run: TrainingRun, prepared: PreparedDataset | None) -> None:
-    """Everything known about a stored run, read from the run alone (nothing is refitted or re-predicted)."""
+    """Everything known about a stored run, read from the run alone (nothing is refitted or re-predicted).
+
+    The readings table leaves its Notes column out (long sentences would be cut at the page edge); the notes of the
+    fitted channels follow the table in full, one line each.
+    """
     st.subheader("Readings", anchor=False)
     components.chips(_run_chips(run))
     _sample_check(run, prepared)
     readings = kept_readings(run)
     st.dataframe(
-        components.shown_scores(readings, ("Accuracy", "Balanced accuracy", "Macro F1")), hide_index=True,
-        width="stretch",
+        components.shown_scores(readings.drop(columns=["Notes"]), ("Accuracy", "Balanced accuracy", "Macro F1")),
+        hide_index=True, width="stretch",
         column_config={
             "Rows used": st.column_config.NumberColumn("Rows used", format="localized",
                                                        help="Training rows this channel was fitted on."),
@@ -439,9 +463,10 @@ def readings_panel(run: TrainingRun, prepared: PreparedDataset | None) -> None:
                 "Balanced accuracy", format="%.4f", help="Mean recall over classes; rare classes count as much "
                 "as common ones."),
             "Macro F1": st.column_config.NumberColumn("Macro F1", format="%.4f"),
-            "Notes": st.column_config.TextColumn("Notes", width="large"),
         },
     )
+    for line in channel_notes(readings, run):
+        st.caption(plain_markdown(line))
     svm_note = svm_rows_note(run)
     if svm_note:
         components.chips([svm_note])

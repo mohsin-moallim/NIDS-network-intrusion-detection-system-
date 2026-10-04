@@ -108,11 +108,21 @@ def test_default_location_follows_the_settings_module(isolated_settings: Path) -
     assert history.path.is_file()
 
 
-def test_history_survives_a_new_instance_and_a_new_process(tmp_path: Path) -> None:
+def test_history_survives_a_new_instance(tmp_path: Path) -> None:
+    """Each instance opens its own connections: what one recorded, a new one reads back from the file."""
     path = tmp_path / "runs.sqlite3"
     RunHistory(path).record(make_run("20261001-120000-aaaa"))
     RunHistory(path).record(make_run("20261001-130000-bbbb", "2026-10-01T13:00:00+00:00"))
-    assert RunHistory(path).list()["run_id"].tolist() == ["20261001-130000-bbbb", "20261001-120000-aaaa"]
+    fresh = RunHistory(path)
+    assert fresh.list()["run_id"].tolist() == ["20261001-130000-bbbb", "20261001-120000-aaaa"]
+    assert fresh.get("20261001-120000-aaaa")["best_channel"] == "xgboost"
+
+
+def test_history_survives_a_new_process(tmp_path: Path) -> None:
+    """A second interpreter reads the history file back (the history survives a restart of the app)."""
+    path = tmp_path / "runs.sqlite3"
+    RunHistory(path).record(make_run("20261001-120000-aaaa"))
+    RunHistory(path).record(make_run("20261001-130000-bbbb", "2026-10-01T13:00:00+00:00"))
     code = (
         "import json, sys\n"
         "from pathlib import Path\n"

@@ -4,19 +4,28 @@ The files copy the real header layout (79 columns: stray leading spaces, and ``F
 ``Avg Bwd Segment Size``) and let a test control every awkward detail: text encoding, the stand-in character in
 Web Attack labels, a byte-order mark, "Infinity"/"NaN"/empty cells, duplicate rows and conflicting labels. The
 values are made up; no dataset rows are involved.
+
+:func:`shared_sample` and :func:`shared_fit` make a synthetic sample, or a ``profile="test"`` fit of one, once per test
+session for every module that asks for the same one.
 """
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
 
 from graticule.schema import FEATURES, LABEL
+
+if TYPE_CHECKING:
+    from graticule.data.prepare import DataRequest, PreparedDataset
+    from graticule.models.train import TrainingRun, TrainRequest
 
 LabelStyle = Literal["fffd", "cp1252", "clean"]
 REPEATED = "Fwd Header Length"
@@ -195,3 +204,37 @@ def fake_generator(n_flows: int, *, seed: int, attack_share: float = 0.35, blur:
     frame.loc[frame.index[:3], "Flow Bytes/s"] = np.inf
     frame[LABEL] = pd.Series(labels, dtype="str")
     return frame
+
+
+#: Samples and fits made once per test session (see :func:`shared_sample` and :func:`shared_fit`).
+_SHARED_SAMPLES: dict[str, "PreparedDataset"] = {}
+_SHARED_FITS: dict[tuple[str, str, str], "TrainingRun"] = {}
+
+
+def shared_sample(request: "DataRequest") -> "PreparedDataset":
+    """``prepare_dataset(request)``, made once per test session and handed to every test that asks for the same
+    request (a synthetic one, in practice). The sample is shared, so it must never be changed."""
+    from graticule.data.prepare import prepare_dataset
+
+    key = json.dumps(asdict(request), sort_keys=True, default=str)
+    if key not in _SHARED_SAMPLES:
+        _SHARED_SAMPLES[key] = prepare_dataset(request)
+    return _SHARED_SAMPLES[key]
+
+
+def shared_fit(prepared: "PreparedDataset", request: "TrainRequest") -> "TrainingRun":
+    """The run 02 Fit makes of ``prepared`` for ``request`` (``build_training_data`` then ``train_all``), fitted once
+    per test session for each sample and request.
+
+    Every call returns a fresh copy (``dataclasses.replace``): a run object of its own, so the readings, results
+    and bundle path a test leaves on it stay with that test, sharing the fitted channels, which nothing changes
+    after the fit.
+    """
+    from graticule.models.train import build_training_data, train_all
+
+    key = (json.dumps(asdict(prepared.request), sort_keys=True, default=str), prepared.fingerprint,
+           json.dumps(request.to_dict(), sort_keys=True))
+    if key not in _SHARED_FITS:
+        _SHARED_FITS[key] = train_all(build_training_data(prepared, request), request,
+                                      data_request=prepared.request, dataset_fingerprint=prepared.fingerprint)
+    return replace(_SHARED_FITS[key])

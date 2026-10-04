@@ -304,5 +304,5 @@ def test_each_row_knows_how_many_recorded_flows_it_stands_for(tmp_path: Path) ->
     assert repeats is not None and repeats["rows"] == len(data.y_test)
     assert repeats["flows"] == int(data.test_copies.sum()) >= repeats["rows"]
     sentence = repeats_sentence({"rows": 10, "flows": 25, "largest": 9, "repeated": 2})
-    assert sentence is not None and "10 rows stand for 25 recorded flows" in sentence
+    assert sentence is not None and "10 rows stand for 25 rows of the cleaned files" in sentence
     assert repeats_sentence({"rows": 10, "flows": 10, "largest": 1, "repeated": 0}) is None

@@ -199,9 +199,12 @@ class TrainingData:
     ``train_rows``/``test_rows`` are positions (``iloc``) into ``prepared.frame``; ``X_*`` are float32 with columns
     in ``feature_names`` order; ``y_*`` are int64 codes into ``classes``. ``reports`` holds plain values: ``rows``,
     ``target`` (classes and dropped classes), ``model_space_duplicates`` (per class), ``conflicts``,
-    ``topk_overlap`` (None unless top-K), ``class_counts_train``/``class_counts_test`` and ``seconds``.
-    ``test_copies`` (int64 per held-out row, or None when the sample carries no counts) is how many rows of the
-    source files each held-out row stands for, once every exact repeat (also over the chosen columns) is counted.
+    ``topk_overlap`` (None unless top-K), ``class_counts_train``/``class_counts_test``, ``seconds`` and
+    ``sampling`` (how 01 Sample thinned each class, see :func:`sampling_shares`; absent for runs built before it was
+    kept) and ``heavy_flows`` (the heavily repeated flows of the cleaned files and which of them were held out, see
+    :func:`heavy_flow_report`; absent when the sample carries no repeat profile). ``test_copies`` (int64 per held-out
+    row, or None when the sample carries no counts) is how many rows of the source files each held-out row stands
+    for, once every exact repeat (also over the chosen columns) is counted.
     """
 
     X_train: np.ndarray
@@ -477,6 +480,88 @@ def _tidy_proba(proba: np.ndarray, model_classes: np.ndarray | None, n_classes: 
 # --------------------------------------------------------------------------------------------------------------
 # Training data
 # --------------------------------------------------------------------------------------------------------------
+def sampling_shares(prepared: Any) -> dict[str, Any] | None:
+    """How the 01 Sample draw thinned each class, as plain values for ``TrainingData.reports["sampling"]``.
+
+    ``before`` and ``after`` map each class the sampler drew from to its distinct rows available before the draw
+    and those it kept (the sampler's own report); ``merge_web_attacks`` says whether the three Web Attack types were
+    drawn as one class. :func:`graticule.evaluate.traffic_weights` reads them to scale each held-out row up to the
+    recorded flows of its class. None when ``prepared`` carries no sampling report.
+    """
+    report = getattr(prepared, "sampling", None)
+    before, after = getattr(report, "before", None), getattr(report, "after", None)
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    request = getattr(prepared, "request", None)
+    return {
+        "merge_web_attacks": bool(getattr(request, "merge_web_attacks", False)),
+        "before": {str(k): int(v) for k, v in before.items()},
+        "after": {str(k): int(v) for k, v in after.items()},
+    }
+
+
+def heavy_flow_report(
+    profile: dict[str, Any],
+    sample_classes: np.ndarray,
+    target_names: np.ndarray,
+    own_copies: np.ndarray,
+    hashes: np.ndarray,
+    rows: np.ndarray,
+    train_rows: np.ndarray,
+    test_rows: np.ndarray,
+    classes: Sequence[str],
+) -> dict[str, Any]:
+    """Which heavily repeated flows of the cleaned files the held-out rows hold, per class of the target.
+
+    ``profile`` is the 01 Sample :func:`~graticule.data.prepare.repeat_profile`. The other arrays describe the rows
+    of the target before the 02 Fit de-duplication, aligned: their 01 Sample class, target class, own copy counts
+    (``PreparedDataset.copies``), model-space hashes and sample positions; ``train_rows``/``test_rows`` are the
+    sample positions of the split. A flow is heavy for target class T when the files recorded it at least
+    ``max(min_copies, share x recorded rows of T)`` times. A sampled heavy flow merged at 02 Fit into another row
+    (identical over the chosen columns) counts where that row went.
+
+    Returns ``{"min_copies", "share", "classes": {T: {"recorded", "threshold", "flows", "copies", "in_sample",
+    "in_training", "held_out", "held_out_copies", "rows"}}}``: the rows of the cleaned files of T, the bar, how many
+    heavy flows the files hold and their copies, how many the sample drew, how many sit among the training and the
+    held-out rows, the copies of those held out, and the held-out row indices (test order) that hold them.
+    """
+    known = profile.get("classes") or {}
+    min_copies = int(profile.get("min_copies", 1))
+    share = float(profile.get("share", 0.0))
+    pairs = pd.DataFrame({"c": pd.Series(sample_classes, dtype="str"), "t": pd.Series(target_names, dtype="str")})
+    mapping = dict(pairs.drop_duplicates("c").itertuples(index=False, name=None))
+    recorded: dict[str, int] = {str(t): 0 for t in classes}
+    heavy: dict[str, list[int]] = {str(t): [] for t in classes}
+    for name, target in mapping.items():
+        entry = known.get(name)
+        if target not in recorded or not isinstance(entry, dict):
+            continue
+        recorded[target] += int(entry.get("recorded", 0))
+        heavy[target].extend(int(c) for c in entry.get("heavy", ()))
+    bars = {t: int(np.ceil(max(min_copies, share * total))) for t, total in recorded.items()}
+    names = pairs["t"].to_numpy(dtype=object)
+    bar_of_row = np.array([bars.get(str(t), np.iinfo(np.int64).max) for t in names], dtype=np.int64)
+    own = np.asarray(own_copies, dtype=np.int64)
+    picked = np.flatnonzero(own >= bar_of_row)
+    hashes = np.asarray(hashes, dtype=np.uint64)
+    first = pd.Series(np.arange(len(hashes), dtype=np.int64)).groupby(hashes, sort=False).first()
+    kept_at = np.asarray(rows, dtype=np.int64)[first.reindex(hashes[picked]).to_numpy(dtype=np.int64)]
+    test_index = pd.Index(np.asarray(test_rows, dtype=np.int64)).get_indexer(kept_at)
+    trained = np.isin(kept_at, np.asarray(train_rows, dtype=np.int64))
+    out: dict[str, Any] = {"min_copies": min_copies, "share": share, "classes": {}}
+    for target in recorded:
+        mine = names[picked] == target
+        listed = [c for c in heavy[target] if c >= bars[target]]
+        held = mine & (test_index >= 0)
+        out["classes"][target] = {
+            "recorded": int(recorded[target]), "threshold": int(bars[target]), "flows": len(listed),
+            "copies": int(sum(listed)), "in_sample": int(mine.sum()), "in_training": int((mine & trained).sum()),
+            "held_out": int(held.sum()), "held_out_copies": int(own[picked][held].sum()),
+            "rows": sorted({int(i) for i in test_index[held]}),
+        }
+    return out
+
+
 def build_training_data(
     prepared: PreparedDataset,
     request: TrainRequest,
@@ -503,6 +588,7 @@ def build_training_data(
     target = sampling.target_for_mode(labels, request.mode, min_class_count=int(request.min_class_count))
     positions = np.flatnonzero(target.keep).astype(np.int64)
     names = target.target.to_numpy(dtype=object)
+    first_positions, first_names = positions, names
     _check(cancel)
 
     # Feature space (degenerate columns found on the rows taking part).
@@ -653,6 +739,15 @@ def build_training_data(
         "class_counts_test": _counts(class_names[y_test], classes),
         "seconds": round(time.perf_counter() - started, 3),
     }
+    shares = sampling_shares(prepared)
+    if shares is not None:
+        reports["sampling"] = shares
+    profile = getattr(prepared, "repeat_profile", None)
+    if flow_copies is not None and isinstance(profile, dict):
+        reports["heavy_flows"] = heavy_flow_report(
+            profile, labels.to_numpy(dtype=object)[first_positions], first_names,
+            np.asarray(base, dtype=np.int64)[first_positions], full_hashes, first_positions, train_rows, test_rows,
+            classes)
     _notify(progress, STAGE_KEY, status=stage, fraction=1.0,
             message=f"{len(train_rows):,} training and {len(test_rows):,} test rows ready")
     return TrainingData(

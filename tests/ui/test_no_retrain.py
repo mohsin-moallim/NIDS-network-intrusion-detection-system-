@@ -50,7 +50,7 @@ from tests.ui.harness import (  # noqa: F401
     touch_every_widget,
 )
 from ui import state, training_ui
-from ui.pages import assay, probe, sweep
+from ui.pages import assay, measure, probe, sweep
 from ui.stations import ALL_STATIONS
 
 pytestmark = pytest.mark.ui
@@ -174,8 +174,9 @@ def test_no_widget_anywhere_refits_or_reprepares(fresh_caches: None, prepare_cal
         unchanged(f"visiting {station.key}")
         touched_elsewhere[station.key] = touch_every_widget(at, unchanged)
     assert touched_elsewhere["sample"] and touched_elsewhere["bench"]
-    # 03 Measure: the confusion and ROC views, the detail channel, the folds and channels of cross-validation.
-    assert {"ms_cm_show", "ms_roc_zoom", f"ms_detail_channel-{run_id}", "ms_cv_k",
+    # 03 Measure: what a reading counts (distinct flows or the recorded-traffic estimate), the confusion and ROC
+    # views, the detail channel, the folds and channels of cross-validation.
+    assert {measure.COUNT_KEY, "ms_cm_show", "ms_roc_zoom", f"ms_detail_channel-{run_id}", "ms_cv_k",
             f"ms_cv_channels-{run_id}"} <= _keys(touched_elsewhere["measure"])
     # 04 Probe: the flow source (which hides the held-out pickers, changed below), the channels shown, the
     # explanation's channel and method.

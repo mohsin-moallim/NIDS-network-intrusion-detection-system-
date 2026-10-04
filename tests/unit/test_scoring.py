@@ -21,10 +21,10 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_m
 
 from graticule import persist, scoring
 from graticule.data.clean import BYTES_PER_S, PACKETS_PER_S
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import DataRequest, PreparedDataset
 from graticule.data.reader import DataFileError, read_flow_csv
 from graticule.models import train
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from graticule.models.train import TrainingRun, TrainRequest
 from graticule.models.verdict import alert_flags
 from graticule.report import exports
 from graticule.report.pdf import ReportExtras
@@ -40,28 +40,26 @@ from graticule.scoring import (
     ScoredBatch,
     score_upload,
 )
-from tests.helpers import make_rows, with_values, write_cic_csv
+from tests.helpers import make_rows, shared_fit, shared_sample, with_values, write_cic_csv
 
 pytestmark = pytest.mark.unit
-SEED = 21
+SEED = 7
 THRESHOLD = 0.9
 
 
 @pytest.fixture(scope="module")
 def prepared() -> PreparedDataset:
-    """About 1,500 synthetic flows (six classes)."""
-    return prepare_dataset(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
+    """About 1,500 synthetic flows (six classes), shared with the other modules that use this sample."""
+    return shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
 
 
 @pytest.fixture(scope="module")
 def runs(prepared: PreparedDataset) -> dict[str, TrainingRun]:
-    """A binary run with four channels and a multi-class run with two (tiny models)."""
-    out = {}
-    for mode, channels in (("binary", ("forest", "xgboost", "svm", "logreg")), ("multiclass", ("forest", "logreg"))):
-        request = TrainRequest(profile="test", seed=SEED, mode=mode, channels=channels)
-        out[mode] = train_all(build_training_data(prepared, request), request, data_request=prepared.request,
-                              dataset_fingerprint=prepared.fingerprint)
-    return out
+    """A binary run with four channels and a multi-class run with two (tiny models; each fit made once per session,
+    see shared_fit)."""
+    return {mode: shared_fit(prepared, TrainRequest(profile="test", seed=SEED, mode=mode, channels=channels))
+            for mode, channels in (("binary", ("forest", "xgboost", "svm", "logreg")),
+                                   ("multiclass", ("forest", "logreg")))}
 
 
 def _generated_rows(prepared: PreparedDataset, run: TrainingRun, n: int) -> list[dict[str, object]]:
@@ -296,9 +294,11 @@ def test_unseen_and_empty_labels_are_left_out_of_the_readings(prepared: Prepared
 
 def test_chunked_scoring_equals_one_chunk(prepared: PreparedDataset, runs: dict[str, TrainingRun],
                                           tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Predicting 7 rows at a time, and parsing the file in many small blocks of lines, change nothing."""
+    """Predicting 7 rows at a time, and parsing the file in many small blocks of lines, change nothing (45 rows: six
+    whole chunks and a short last one, read in about ten blocks)."""
     run = runs["multiclass"]
-    path = write_cic_csv(tmp_path / "flows.csv", _generated_rows(prepared, run, 101))
+    rows = 45
+    path = write_cic_csv(tmp_path / "flows.csv", _generated_rows(prepared, run, rows))
     for channel in (CONSENSUS,):  # every channel of the run, read chunk by chunk
         whole = score_upload(run, path, channel=channel, alert_threshold=THRESHOLD)
         assert whole.upload is not None and len(whole.upload.blocks) == 1
@@ -306,8 +306,8 @@ def test_chunked_scoring_equals_one_chunk(prepared: PreparedDataset, runs: dict[
         pieces = score_upload(run, path, channel=channel, alert_threshold=THRESHOLD, chunk_rows=7)
         monkeypatch.undo()
         assert pieces.upload is not None and len(pieces.upload.blocks) > 5
-        assert sum(block.rows for block in pieces.upload.blocks) == 101
-        _check_shape(pieces, 101)
+        assert sum(block.rows for block in pieces.upload.blocks) == rows
+        _check_shape(pieces, rows)
         assert np.allclose(_probabilities(whole), _probabilities(pieces), atol=1e-6)
         assert whole.frame[PREDICTED].tolist() == pieces.frame[PREDICTED].tolist()
         assert whole.accuracy == pieces.accuracy and whole.rows_with_bad_values == pieces.rows_with_bad_values

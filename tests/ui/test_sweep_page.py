@@ -53,12 +53,12 @@ def _cards(at: AppTest) -> str:
 
 def _fitted_app(channels: list[str] | None = None) -> AppTest:
     """A session holding a small synthetic sample and a fit of ``channels`` (fitted once per module and channel set,
-    as 01 Sample and 02 Fit would make them), at 01 Sample."""
+    as 01 Sample and 02 Fit would make them), at 02 Fit."""
     key = tuple(channels or ["xgboost", "logreg"])
     if key not in _FITS:
         _FITS[key] = fit_synthetic(channels=key)
     prepared, run = _FITS[key]
-    at = app_with_run(run, prepared).run()
+    at = app_with_run(run, prepared, key="fit").run()
     assert not errors(at), errors(at)
     return at
 

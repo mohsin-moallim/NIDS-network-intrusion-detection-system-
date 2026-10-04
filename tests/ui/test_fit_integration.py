@@ -3,6 +3,7 @@
 The page tests in ``test_fit_page.py`` drive each feature of the station; these tests check that the station and
 :mod:`graticule.models` agree on what flows between them: a real background job cancelled from the progress panel
 (the partial run is kept and read back), and a Top-K fit whose ranking report and port opt-in reach the readings.
+Each starts from the session-wide synthetic sample, already drawn (``drawn_sample`` in tests/ui/harness.py).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from streamlit.testing.v1 import AppTest
 
 from graticule.models import jobs, train, zoo
 from graticule.schema import DESTINATION_PORT
-from tests.ui.harness import draw_synthetic_sample, errors, fresh_caches, goto, new_app  # noqa: F401
+from tests.ui.harness import app_with_sample, drawn_sample, errors, fresh_caches, goto  # noqa: F401
 from ui import state
 
 pytestmark = pytest.mark.ui
@@ -44,11 +45,9 @@ def test_cancel_in_the_progress_panel_stops_a_real_background_fit(fresh_caches: 
         return real_builder(ctx)
 
     monkeypatch.setitem(zoo.BUILDERS, "xgboost", held_builder)
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
+    at = app_with_sample(drawn_sample(), "fit").run()
     monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
-    at.multiselect(key="fit_channels").set_value(["forest", "xgboost", "logreg"])
+    at.pills(key="fit_channels").set_value(["forest", "xgboost", "logreg"])
     before = train.FIT_CALLS.copy()
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
@@ -102,11 +101,9 @@ def test_a_background_fit_that_ends_on_another_station_is_adopted_there(fresh_ca
         return real_builder(ctx)
 
     monkeypatch.setitem(zoo.BUILDERS, "logreg", held_builder)
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
+    at = app_with_sample(drawn_sample(), "fit").run()
     monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
-    at.multiselect(key="fit_channels").set_value(["logreg"])
+    at.pills(key="fit_channels").set_value(["logreg"])
     at.button(key="fit_submit").click().run()
     job = jobs.get_job(at.session_state[state.JOB_ID])
     assert job is not None
@@ -132,14 +129,13 @@ def test_a_background_fit_that_ends_on_another_station_is_adopted_there(fresh_ca
     assert _readings(at)["Channel"].tolist() == ["CH5 Logistic regression"]
 
 
+@pytest.mark.usefixtures("quick_ranking")  # a 20-round ranking model (tests/conftest.py)
 def test_a_topk_fit_with_the_port_reports_its_ranking(fresh_caches: None) -> None:
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
+    at = app_with_sample(drawn_sample(), "fit").run()
     at.radio(key="fit_features").set_value("topk")
     at.number_input(key="fit_k").set_value(10)
     at.checkbox(key="fit_port").set_value(True)
-    at.multiselect(key="fit_channels").set_value(["xgboost"])
+    at.pills(key="fit_channels").set_value(["xgboost"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     run = at.session_state[state.RUN]

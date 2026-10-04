@@ -69,6 +69,10 @@ SYNTHETIC_FILE = "synthetic"
 SourceKind = Literal["cicids", "synthetic"]
 ProgressFn = Callable[[str, float], None]
 CLASS_TABLE_COLUMNS: tuple[str, ...] = ("Class", "Kind", "Available", "In sample", "Share of sample")
+#: A distinct flow counts as heavily repeated when the cleaned files recorded it at least ``HEAVY_MIN_COPIES``
+#: times and it alone is at least ``HEAVY_SHARE`` of its class's recorded rows (see :func:`repeat_profile`).
+HEAVY_MIN_COPIES = 100
+HEAVY_SHARE = 0.005
 
 
 def file_order_key(name: str) -> tuple[int, str]:
@@ -452,6 +456,11 @@ class PreparedDataset:
     ``copies`` (int64, one entry per row of ``frame``, or None) says how many rows of the files, after the bad-value
     strategy, each sampled row stands for: itself plus the exact repeats of it that were removed within and across
     files. Readings count each distinct flow once; these counts say how much traffic each one represents.
+
+    ``repeat_profile`` (or None) describes the repeats of every distinct flow the draw chose FROM, sampled or not
+    (see :func:`repeat_profile`): per class, the rows the cleaned files recorded and the copy counts of the heavily
+    repeated flows. The recorded-traffic estimate of 03 Measure uses it to say how far heavily repeated flows that
+    missed the held-out rows can move its readings.
     """
 
     frame: pd.DataFrame
@@ -473,6 +482,7 @@ class PreparedDataset:
     file_timings: dict[str, FileTiming] = field(default_factory=dict)
     memory_start_mb: float | None = None
     copies: np.ndarray | None = field(default=None, repr=False, compare=False)
+    repeat_profile: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
     def features(self) -> pd.DataFrame:
         """The 77 float32 feature columns (a read-only view: copy before modifying)."""
@@ -687,6 +697,34 @@ def _fingerprint(request: DataRequest, frame: pd.DataFrame) -> str:
     return digest.hexdigest()
 
 
+def repeat_profile(classes: pd.Series, copies: np.ndarray) -> dict[str, Any]:
+    """How heavily the cleaned files repeat the distinct flows of each class, as plain values.
+
+    ``classes`` holds the class of every distinct flow the sample is drawn from (Web Attack types merged when asked)
+    and ``copies`` how many rows of the cleaned files each one stands for. Returns ``{"min_copies", "share",
+    "classes": {name: {"recorded", "distinct", "heavy"}}}``: per class, the rows the files recorded, its distinct
+    flows, and the copy counts (largest first) of every flow recorded at least :data:`HEAVY_MIN_COPIES` times that
+    alone is at least :data:`HEAVY_SHARE` of the class's recorded rows. A coarser class built from several of these
+    (the Attack class of binary mode) has a higher bar, so every flow heavy there is listed here too.
+    """
+    names = pd.Series(classes, dtype="str").to_numpy(dtype=object)
+    counts = np.asarray(copies, dtype=np.int64).reshape(-1)
+    if len(names) != len(counts):
+        raise ValueError("Every distinct flow needs a class and a copy count.")
+    codes, uniques = pd.factorize(pd.Series(names, dtype="str"), sort=True)
+    recorded = np.bincount(codes, weights=counts, minlength=len(uniques)) if len(counts) else np.zeros(0)
+    distinct = np.bincount(codes, minlength=len(uniques)) if len(counts) else np.zeros(0, dtype=np.int64)
+    candidates = np.flatnonzero(counts >= HEAVY_MIN_COPIES)
+    out: dict[str, Any] = {"min_copies": HEAVY_MIN_COPIES, "share": HEAVY_SHARE, "classes": {}}
+    for index, name in enumerate(uniques):
+        total = int(round(float(recorded[index])))
+        bar = max(HEAVY_MIN_COPIES, HEAVY_SHARE * total)
+        mine = counts[candidates[codes[candidates] == index]]
+        heavy = sorted((int(c) for c in mine if c >= bar), reverse=True)
+        out["classes"][str(name)] = {"recorded": total, "distinct": int(distinct[index]), "heavy": heavy}
+    return out
+
+
 def _single_class_note(classes: pd.Series) -> str | None:
     """User-facing warning when the sample holds fewer than two classes, else None."""
     try:
@@ -805,6 +843,7 @@ def prepare_dataset(
         # Rare-aware sample, then copy only the chosen rows out of each file frame (applying the repairs).
         mark = time.perf_counter()
         notify("Drawing the rare-aware sample", 0.92)
+        profile = repeat_profile(classes, weights)
         positions, sampling_report = sample_positions(classes, int(request.row_budget), int(request.seed))
         file_id, local = file_id[positions], local[positions]
         weights = np.asarray(weights, dtype=np.int64)[positions]
@@ -842,5 +881,5 @@ def prepare_dataset(
         class_counts=class_counts, single_class=note is not None, single_class_message=note,
         fingerprint=fingerprint, seconds=time.perf_counter() - started, peak_memory_mb=watch.peak_mb,
         step_seconds=steps, file_timings={s.name: s.timing for s in sources}, memory_start_mb=watch.start_mb,
-        copies=row_copies,
+        copies=row_copies, repeat_profile=profile,
     )

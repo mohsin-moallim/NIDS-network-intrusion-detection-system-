@@ -38,6 +38,8 @@ from xgboost import callback as xgb_callback
 
 pytestmark = pytest.mark.integration
 REQUEST = TrainRequest(mode="binary", channels=("forest", "xgboost", "logreg"), profile="test", seed=5)
+#: For tests about the job's bookkeeping (work slot, hooks, errors), which do not depend on the channels fitted.
+QUICK = replace(REQUEST, channels=("logreg",))
 WAIT = 120.0
 
 
@@ -150,8 +152,9 @@ def test_only_one_job_runs_at_a_time(prepared: PreparedDataset, cleanup: list[Tr
         return real_builder(ctx)
 
     monkeypatch.setitem(zoo.BUILDERS, "forest", held_builder)
-    first = TrainingJob(prepared, REQUEST)
-    second = TrainingJob(prepared, REQUEST)
+    request = replace(REQUEST, channels=("forest",))  # the held channel is all a running job needs here
+    first = TrainingJob(prepared, request)
+    second = TrainingJob(prepared, request)
     cleanup.extend([first, second])
     try:
         first.start()
@@ -166,7 +169,7 @@ def test_only_one_job_runs_at_a_time(prepared: PreparedDataset, cleanup: list[Tr
         # A turned-away job that its caller drops takes its sample with it.
         sample = replace(prepared)
         sample_ref = weakref.ref(sample)
-        turned_away = TrainingJob(sample, REQUEST)
+        turned_away = TrainingJob(sample, request)
         with pytest.raises(JobBusyError):
             turned_away.start()
         del sample, turned_away
@@ -198,7 +201,7 @@ def test_a_fit_waits_for_no_measurement_holding_the_work_slot(prepared: Prepared
         release_slot()
     assert slot_holder() is None
     seen: list[str | None] = []
-    job = TrainingJob(prepared, REQUEST, on_finished=lambda run: seen.append(slot_holder()))
+    job = TrainingJob(prepared, QUICK, on_finished=lambda run: seen.append(slot_holder()))
     job.run_inline()
     assert seen == ["a fit"] and slot_holder() is None
 
@@ -214,7 +217,7 @@ def test_the_finish_hook_sees_every_fitted_run_and_never_fails_the_job(prepared:
         seen.append(run)
         finished.set()
 
-    job = TrainingJob(prepared, REQUEST, on_finished=hook)
+    job = TrainingJob(prepared, QUICK, on_finished=hook)
     cleanup.append(job)
     job.start()
     assert job.wait(WAIT) and finished.is_set()
@@ -223,7 +226,7 @@ def test_the_finish_hook_sees_every_fitted_run_and_never_fails_the_job(prepared:
     def broken(run: TrainingRun) -> None:
         raise OSError("disk full")
 
-    failing = TrainingJob(prepared, REQUEST, on_finished=broken)
+    failing = TrainingJob(prepared, QUICK, on_finished=broken)
     run = failing.run_inline()
     assert failing.state == "done" and run.ok_channels() and failing.hook_error == "OSError: disk full"
 
@@ -281,7 +284,7 @@ def test_unexpected_errors_are_captured_with_a_traceback(prepared: PreparedDatas
     assert "Traceback" in job.error
     # The slot was released: another job can run.
     monkeypatch.undo()
-    again = TrainingJob(prepared, REQUEST)
+    again = TrainingJob(prepared, QUICK)
     assert isinstance(again.run_inline(), TrainingRun)
 
 

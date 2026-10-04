@@ -1,4 +1,8 @@
-"""Headless checks of the 02 Fit station: prerequisites, a fit through the form, and the single-class guard."""
+"""Headless checks of the 02 Fit station: prerequisites, a fit through the form, and the single-class guard.
+
+The first fit draws its sample through the 01 Sample form and checks that it is the session-wide
+``drawn_sample()`` (tests/ui/harness.py); the other tests start from that sample, already drawn.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +13,19 @@ from types import SimpleNamespace
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from graticule.history import RunHistory
 from graticule.models import jobs, train, zoo
 from graticule.settings import AppSettings, save_settings
 from tests.helpers import make_rows, write_cic_csv
-from tests.ui.harness import draw_synthetic_sample, errors, fresh_caches, goto, new_app  # noqa: F401
+from tests.ui.harness import (  # noqa: F401
+    app_with_sample,
+    draw_synthetic_sample,
+    drawn_sample,
+    errors,
+    fresh_caches,
+    goto,
+    new_app,
+)
 from ui import state, training_ui
 
 pytestmark = pytest.mark.ui
@@ -60,13 +73,16 @@ def test_a_fit_through_the_form_stores_one_run(fresh_caches: None, job_spy: list
     at = new_app().run()
     draw_synthetic_sample(at)
     assert not errors(at), errors(at)
+    # The sample the other tests start from is exactly what this draw through the form made.
+    drawn = at.session_state[state.PREPARED]
+    assert drawn.request == drawn_sample().request and drawn.fingerprint == drawn_sample().fingerprint
     goto(at, "fit")
     assert not errors(at), errors(at)
     notes = _markdown(at)
     assert "On the bench:" in notes and "synthetic flows" in notes
     assert at.radio(key="fit_mode").value == "binary"
     assert at.checkbox(key="fit_port").value is False
-    assert at.multiselect(key="fit_channels").value == list(training_ui.channel_options())
+    assert at.pills(key="fit_channels").value == list(training_ui.channel_options())
     assert at.toggle(key="fit_balanced").value is True
     assert any("kernel SVM fit time grows at least quadratically" in c.value for c in at.caption)
     before = _fit_calls()
@@ -93,6 +109,9 @@ def test_a_fit_through_the_form_stores_one_run(fresh_caches: None, job_spy: list
     # The session and the registry hold the run; the finished job only remembers its id.
     assert job_spy[0].result is None and job_spy[0].run_id == run_id  # type: ignore[attr-defined]
     assert state.run_registry().get(run_id) is run
+    # The finished fit is in the run history, once (the Logbook lists it; tests/ui/test_logbook_page.py).
+    history = RunHistory().list()
+    assert history["run_id"].tolist() == [run_id] and history["channels"].tolist() == [", ".join(run.ok_channels())]
 
     # A plain rerun shows the same stored run without fitting again.
     at.run()
@@ -120,10 +139,8 @@ def test_a_benign_only_sample_warns_and_starts_no_job(tmp_path: Path, fresh_cach
 
 
 def test_no_channel_chosen_is_a_warning(fresh_caches: None, job_spy: list[object]) -> None:
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
-    at.multiselect(key="fit_channels").set_value([])
+    at = app_with_sample(drawn_sample(), "fit").run()
+    at.pills(key="fit_channels").set_value([])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     assert any("Choose at least one channel" in w.value for w in at.warning)
@@ -131,11 +148,9 @@ def test_no_channel_chosen_is_a_warning(fresh_caches: None, job_spy: list[object
 
 
 def test_a_multiclass_fit_respects_the_form(fresh_caches: None) -> None:
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
+    at = app_with_sample(drawn_sample(), "fit").run()
     at.radio(key="fit_mode").set_value("multiclass")
-    at.multiselect(key="fit_channels").set_value(["forest", "svm"])
+    at.pills(key="fit_channels").set_value(["forest", "svm"])
     at.toggle(key="fit_balanced").set_value(False)
     at.number_input(key="fit_svm_cap").set_value(2_000)
     at.slider(key="fit_test_share").set_value(0.3)
@@ -150,15 +165,13 @@ def test_a_multiclass_fit_respects_the_form(fresh_caches: None) -> None:
     # The form now repeats the options of that fit.
     at.run()
     assert at.radio(key="fit_mode").value == "multiclass"
-    assert at.multiselect(key="fit_channels").value == ["forest", "svm"]
+    assert at.pills(key="fit_channels").value == ["forest", "svm"]
     assert any("Options repeat your last fit" in c.value for c in at.caption)
 
 
 def test_a_new_sample_after_a_fit_is_flagged(fresh_caches: None) -> None:
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
-    at.multiselect(key="fit_channels").set_value(["logreg"])
+    at = app_with_sample(drawn_sample(), "fit").run()
+    at.pills(key="fit_channels").set_value(["logreg"])
     at.button(key="fit_submit").click().run()
     run_id = at.session_state[state.LAST_RUN_ID]
     draw_synthetic_sample(at, flows=2_400)
@@ -170,10 +183,8 @@ def test_a_new_sample_after_a_fit_is_flagged(fresh_caches: None) -> None:
 
 
 def test_the_last_fit_can_be_restored_in_a_new_session(fresh_caches: None) -> None:
-    first = new_app().run()
-    draw_synthetic_sample(first)
-    goto(first, "fit")
-    first.multiselect(key="fit_channels").set_value(["forest"])
+    first = app_with_sample(drawn_sample(), "fit").run()
+    first.pills(key="fit_channels").set_value(["forest"])
     first.button(key="fit_submit").click().run()
     run_id = first.session_state[state.LAST_RUN_ID]
     calls = _fit_calls()
@@ -197,11 +208,9 @@ def test_the_last_fit_can_be_restored_in_a_new_session(fresh_caches: None) -> No
 
 def test_a_background_fit_shows_progress_then_its_readings(fresh_caches: None,
                                                           monkeypatch: pytest.MonkeyPatch) -> None:
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
+    at = app_with_sample(drawn_sample(), "fit").run()
     monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
-    at.multiselect(key="fit_channels").set_value(["forest", "logreg"])
+    at.pills(key="fit_channels").set_value(["forest", "logreg"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     deadline = time.monotonic() + 60
@@ -218,11 +227,9 @@ def test_a_background_fit_shows_progress_then_its_readings(fresh_caches: None,
 
 def test_a_background_fit_is_not_lost_when_its_tab_is_refreshed(fresh_caches: None, job_spy: list[object],
                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
+    at = app_with_sample(drawn_sample(), "fit").run()
     monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
-    at.multiselect(key="fit_channels").set_value(["logreg"])
+    at.pills(key="fit_channels").set_value(["logreg"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     assert len(job_spy) == 1
@@ -256,15 +263,14 @@ def _failing_builder(failing: set[str], monkeypatch: pytest.MonkeyPatch) -> None
 def test_a_failing_channel_is_reported_and_the_others_kept(fresh_caches: None,
                                                           monkeypatch: pytest.MonkeyPatch) -> None:
     _failing_builder({"svm"}, monkeypatch)
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
-    at.multiselect(key="fit_channels").set_value(["forest", "svm", "logreg"])
+    at = app_with_sample(drawn_sample(), "fit").run()
+    at.pills(key="fit_channels").set_value(["forest", "svm", "logreg"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     readings = _readings(at)
     assert readings["Status"].tolist() == ["fitted", "failed", "fitted"]
-    assert "broken builder for svm" in readings["Notes"].iloc[1]
+    assert "Notes" not in readings.columns  # the notes follow the table in full instead of a cut column
+    assert "broken builder for svm" in training_ui.kept_readings(at.session_state[state.RUN])["Notes"].iloc[1]
     assert readings["Balanced accuracy"].isna().tolist() == [False, True, False]
     assert "**CH3 RBF SVM failed.** RuntimeError: broken builder for svm" in _markdown(at)
     assert at.session_state[state.RUN].ok_channels() == ["forest", "logreg"]
@@ -272,10 +278,8 @@ def test_a_failing_channel_is_reported_and_the_others_kept(fresh_caches: None,
 
 def test_when_every_channel_fails_nothing_is_stored(fresh_caches: None, monkeypatch: pytest.MonkeyPatch) -> None:
     _failing_builder({"forest", "logreg"}, monkeypatch)
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
-    at.multiselect(key="fit_channels").set_value(["forest", "logreg"])
+    at = app_with_sample(drawn_sample(), "fit").run()
+    at.pills(key="fit_channels").set_value(["forest", "logreg"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     problems = " ".join(e.value for e in at.error)
@@ -317,8 +321,7 @@ def test_the_progress_panel_shows_a_running_job_and_cancels_it(fresh_caches: Non
     lookup = {fake.job_id: fake}
     monkeypatch.setattr(jobs, "get_job", lookup.get)
     monkeypatch.setattr(training_ui, "get_job", lookup.get)
-    at = new_app().run()
-    draw_synthetic_sample(at)
+    at = app_with_sample(drawn_sample())
     at.session_state[state.JOB_ID] = fake.job_id
     goto(at, "fit")
     assert not errors(at), errors(at)
@@ -357,10 +360,8 @@ def test_a_cancel_after_the_last_channel_reads_as_a_finished_fit(fresh_caches: N
         return real_quantiles(X)  # type: ignore[arg-type]
 
     monkeypatch.setattr(train, "feature_quantiles", cancel_while_finishing)
-    at = new_app().run()
-    draw_synthetic_sample(at)
-    goto(at, "fit")
-    at.multiselect(key="fit_channels").set_value(["forest", "logreg"])
+    at = app_with_sample(drawn_sample(), "fit").run()
+    at.pills(key="fit_channels").set_value(["forest", "logreg"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
     run = at.session_state[state.RUN]

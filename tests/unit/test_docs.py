@@ -69,7 +69,7 @@ def test_relative_links_resolve_and_screenshot_names_agree() -> None:
                 continue
             assert (doc.parent / target).resolve().exists(), f"{doc.name} -> {target}"
     assert linked_images == shots
-    assert len(shots) == 8
+    assert len(shots) == 9  # one per station and utility shown, plus 02 Fit while it fits
 
 
 def test_contents_anchors_match_headings() -> None:

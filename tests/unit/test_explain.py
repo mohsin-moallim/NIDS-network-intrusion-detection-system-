@@ -20,10 +20,11 @@ import pandas as pd
 import pytest
 
 from graticule import explain, theme, viz
-from graticule.data.prepare import DataRequest, prepare_dataset
+from graticule.data.prepare import DataRequest
 from graticule.models import train, zoo
-from graticule.models.train import TrainRequest, build_training_data, feature_quantiles, train_all
+from graticule.models.train import TrainRequest, feature_quantiles
 from graticule.models.zoo import BuildContext
+from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
 NAMES = [f"f{i}" for i in range(6)]
@@ -38,14 +39,21 @@ def _toy(n_classes: int, seed: int = 3, n: int = 600) -> tuple[np.ndarray, np.nd
     return X, np.digitize(score, edges).astype(np.int64)
 
 
+#: XGBoost channels fitted by :func:`_fitted_xgboost`, one per class count (the tests only read them).
+_XGBOOST_FITS: dict[int, Any] = {}
+
+
 def _fitted_xgboost(n_classes: int) -> Any:
-    """A test-profile XGBoost channel fitted through the trainer (early stopping sets its best round)."""
-    X, y = _toy(n_classes)
-    ctx = BuildContext(n_classes=n_classes, seed=0, profile="test")
-    estimator = zoo.build_estimator("xgboost", ctx)
-    fitted, info = train.fit_model("xgboost", estimator, X, y, zoo.channel_weights("xgboost", y), ctx=ctx)
-    assert "best_iteration" in info["extra"]
-    return fitted
+    """A test-profile XGBoost channel fitted through the trainer (early stopping sets its best round); fitted once
+    per class count for the module and shared, so it must never be changed."""
+    if n_classes not in _XGBOOST_FITS:
+        X, y = _toy(n_classes)
+        ctx = BuildContext(n_classes=n_classes, seed=0, profile="test")
+        estimator = zoo.build_estimator("xgboost", ctx)
+        fitted, info = train.fit_model("xgboost", estimator, X, y, zoo.channel_weights("xgboost", y), ctx=ctx)
+        assert "best_iteration" in info["extra"]
+        _XGBOOST_FITS[n_classes] = fitted
+    return _XGBOOST_FITS[n_classes]
 
 
 def _margins(pipeline: Any, rows: np.ndarray) -> np.ndarray:
@@ -223,11 +231,9 @@ def test_row_digest_ignores_nan_payload_and_signed_zero() -> None:
 # --------------------------------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def binary_run() -> train.TrainingRun:
-    """All five channels (test profile) fitted on a small synthetic sample."""
-    prepared = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=1_500, seed=21))
-    request = TrainRequest(mode="binary", profile="test", seed=21)
-    data = build_training_data(prepared, request)
-    return train_all(data, request, data_request=prepared.request, dataset_fingerprint=prepared.fingerprint)
+    """All five channels (test profile) fitted on a small synthetic sample (made once per session, see shared_fit)."""
+    prepared = shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=7))
+    return shared_fit(prepared, TrainRequest(mode="binary", profile="test", seed=7))
 
 
 @pytest.mark.integration

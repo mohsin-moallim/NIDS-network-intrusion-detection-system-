@@ -177,14 +177,16 @@ def test_class_chart_uses_shapes_and_theme_colours(mode: str) -> None:
     assert spec["config"]["axis"]["labelFont"] == theme.FONT_MONO
     data = next(iter(spec["datasets"].values()))
     assert [row["class"] for row in data] == ["BENIGN", "DoS Hulk", "Heartbleed"]
-    # The written count is the sampled one, so it sits beside the filled (sampled) mark, on its left.
+    # The written count is the sampled one, in a column of its own right of the plot (tests/unit/test_class_chart.py
+    # checks that it never meets the marks or the class names at any width).
     text = next(layer for layer in layers if layer["mark"]["type"] == "text")
-    assert text["encoding"]["x"]["field"] == "after" and text["encoding"]["text"]["field"] == "label"
-    assert text["mark"]["align"] == "right" and text["mark"]["dx"] < 0
-    domain_low = layers[0]["encoding"]["x"]["scale"]["domain"][0]
-    assert domain_low < 11 / 1.8  # room left of the smallest mark for its label
+    assert text["encoding"]["x"] == {"value": "width"} and text["encoding"]["text"]["field"] == "label"
+    assert text["mark"]["align"] == "right" and text["mark"]["dx"] > 0
+    assert [row["label"] for row in data] == ["120,000", "40,000", "11"]
 
 
+@pytest.mark.slow  # a real vl-convert render; on every run tests/unit/test_class_chart.py lays this chart out with
+# vl-convert at three widths, and tests/unit/test_viz.py and tests/unit/test_report_pdf.py render charts to PNG
 def test_class_chart_exports_to_png() -> None:
     chart = viz.class_distribution_chart({"BENIGN": 900, "Bot": 12}, {"BENIGN": 300, "Bot": 12}, "light")
     png = viz.to_png(chart, scale=1, background=theme.LIGHT.surface)

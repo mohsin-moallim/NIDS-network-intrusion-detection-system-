@@ -261,7 +261,8 @@ def _no_held_out_rows(run: TrainingRun) -> None:
 def _contents_note(run: TrainingRun, extras: record_pdf.ReportExtras) -> None:
     """What the record will hold, and how to add the optional sections that are missing."""
     st.caption("The record holds: a cover with the run's identity and contents, the sample sheet, the fit "
-               "settings, the readings (leaderboard and per-class table), every channel's confusion matrix, ROC "
+               "settings, the readings (leaderboard, a recorded-traffic estimate table when the run allows it, and "
+               "the per-class table), every channel's confusion matrix, ROC "
                "and precision-recall curves, feature importance, timing, notes and limitations, and the dataset "
                "citation. Charts are drawn in the light palette whatever the app's theme.")
     optional = [

@@ -80,12 +80,12 @@ def _edit_cell(at: AppTest, row: int, value: float | None) -> AppTest:
 
 
 def _fitted_app(mode: str = "binary", channels: list[str] | None = None) -> AppTest:
-    """A session holding a small synthetic sample and a fit of it (fitted directly, as 02 Fit would), at 01 Sample."""
+    """A session holding a small synthetic sample and a fit of it (fitted directly, as 02 Fit would), at 02 Fit."""
     options: dict[str, Any] = {"mode": mode}
     if channels is not None:
         options["channels"] = tuple(channels)
     prepared, run = fit_synthetic(**options)
-    at = app_with_run(run, prepared).run()
+    at = app_with_run(run, prepared, key="fit").run()
     assert not errors(at), errors(at)
     return at
 

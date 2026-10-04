@@ -17,13 +17,13 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from graticule import evaluate, scoring
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import DataRequest, PreparedDataset
 from graticule.models import train
 from graticule.models.jobs import claim_slot, release_slot, slot_holder
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from graticule.models.train import TrainingRun, TrainRequest
 from graticule.schema import FEATURES, LABEL
 from graticule.scoring import CONSENSUS, ScoredBatch
-from tests.helpers import write_cic_csv
+from tests.helpers import shared_fit, shared_sample, write_cic_csv
 from tests.ui.harness import errors, fresh_caches, goto, new_app  # noqa: F401
 from ui import state
 from ui.pages import assay
@@ -34,12 +34,9 @@ ROWS = 230
 
 @pytest.fixture(scope="module")
 def fitted() -> tuple[PreparedDataset, TrainingRun]:
-    """A small synthetic sample and a binary fit of three quick channels."""
-    prepared = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=1_500, seed=8))
-    request = TrainRequest(profile="test", seed=8, channels=("forest", "xgboost", "logreg"))
-    run = train_all(build_training_data(prepared, request), request, data_request=prepared.request,
-                    dataset_fingerprint=prepared.fingerprint)
-    return prepared, run
+    """A small synthetic sample and a binary fit of three quick channels (made once per session, see shared_fit)."""
+    prepared = shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=7))
+    return prepared, shared_fit(prepared, TrainRequest(profile="test", seed=7, channels=("forest", "xgboost", "logreg")))
 
 
 def _fits() -> int:

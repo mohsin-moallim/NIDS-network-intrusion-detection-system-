@@ -14,10 +14,11 @@ import pytest
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 from graticule import simulate
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import DataRequest, PreparedDataset
 from graticule.data.synthetic import SYNTHETIC_CLASSES
-from graticule.models.train import FIT_CALLS, TrainingRun, TrainRequest, build_training_data, train_all
+from graticule.models.train import FIT_CALLS, TrainingRun, TrainRequest
 from graticule.simulate import ReplaySource, SimulationSession, SyntheticSource
+from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
 SEED = 23
@@ -146,21 +147,22 @@ def test_a_share_the_rows_cannot_give_is_explained() -> None:
 # --------------------------------------------------------------------------------------------------------------
 # Sessions on a tiny fitted run
 # --------------------------------------------------------------------------------------------------------------
+#: Seed of the sample and the fits below: the sample 01 Sample draws in the UI tests, so the binary fit is shared.
+FIT_SEED = 42
+
+
 @pytest.fixture(scope="module")
 def prepared() -> PreparedDataset:
-    """About 2,000 synthetic flows (six classes)."""
-    return prepare_dataset(DataRequest(source="synthetic", synthetic_flows=2_000, row_budget=1_600, seed=SEED))
+    """2,000 synthetic flows kept to 1,200 rows (six classes), shared with the other modules that use this sample."""
+    return shared_sample(DataRequest(source="synthetic", synthetic_flows=2_000, row_budget=1_200, seed=FIT_SEED))
 
 
 @pytest.fixture(scope="module")
 def runs(prepared: PreparedDataset) -> dict[str, TrainingRun]:
-    """Two small channels fitted once per mode."""
-    out = {}
-    for mode in ("binary", "multiclass"):
-        request = TrainRequest(mode=mode, profile="test", seed=SEED, channels=("xgboost", "logreg"))
-        data = build_training_data(prepared, request)
-        out[mode] = train_all(data, request, data_request=prepared.request, dataset_fingerprint=prepared.fingerprint)
-    return out
+    """Two small channels fitted once per mode (each fit made once per session, see shared_fit)."""
+    return {mode: shared_fit(prepared, TrainRequest(mode=mode, profile="test", seed=FIT_SEED,  # type: ignore[arg-type]
+                                                    channels=("xgboost", "logreg")))
+            for mode in ("binary", "multiclass")}
 
 
 def _fits() -> int:

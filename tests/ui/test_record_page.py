@@ -54,10 +54,10 @@ def quick_charts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _fitted_app() -> AppTest:
     """A session holding a small synthetic sample and a fresh three-channel fit of it (fitted directly, as 02 Fit
-    would; a fresh run each time, since these tests keep readings and results on it), at 01 Sample."""
+    would; a fresh run each time, since these tests keep readings and results on it), at 02 Fit."""
     prepared, run = fit_synthetic(channels=("forest", "xgboost", "logreg"))
     RunHistory().record(run)  # as 02 Fit records every fit (the test's own history file)
-    at = app_with_run(run, prepared).run()
+    at = app_with_run(run, prepared, key="fit").run()
     assert not errors(at), errors(at)
     return at
 

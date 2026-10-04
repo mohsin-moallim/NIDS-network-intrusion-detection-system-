@@ -24,11 +24,12 @@ import pytest
 from PIL import Image
 
 from graticule import evaluate, viz
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import DataRequest, PreparedDataset
 from graticule.models import train
 from graticule.models.jobs import CancelToken, TrainingCancelled
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from graticule.models.train import TrainingRun, TrainRequest
 from graticule.report import pdf as rp
+from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
 SEED = 7
@@ -202,14 +203,13 @@ def outline(data: bytes) -> list[str]:
 # --------------------------------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def prepared() -> PreparedDataset:
-    """About 1,500 synthetic flows (six classes)."""
-    return prepare_dataset(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
+    """About 1,500 synthetic flows (six classes), shared with the other modules that use this sample."""
+    return shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
 
 
 def _fit(prepared: PreparedDataset, **changes: Any) -> TrainingRun:
-    request = TrainRequest(**{"profile": "test", "seed": SEED, **changes})
-    data = build_training_data(prepared, request)
-    return train_all(data, request, data_request=prepared.request, dataset_fingerprint=prepared.fingerprint)
+    """A fresh copy of a ``profile="test"`` fit of ``prepared`` (each fit made once per session, see shared_fit)."""
+    return shared_fit(prepared, TrainRequest(**{"profile": "test", "seed": SEED, **changes}))
 
 
 @pytest.fixture(scope="module")
@@ -435,7 +435,9 @@ def test_alert_thresholds_print_with_three_decimals(binary_record: dict[str, Any
     assert "an attack verdict whose attack probability is at least the alert threshold" in text
 
 
-def test_inflating_a_compressed_record_cuts_each_stream_at_its_length(binary_run: TrainingRun,
+def test_inflating_a_compressed_record_cuts_each_stream_at_its_length(prepared: PreparedDataset,
+                                                                      binary_run: TrainingRun,
+                                                                      hollow_record: rp.RenderedReport,
                                                                       quick_charts: None) -> None:
     """Compressed bytes may end in a line-feed byte; :func:`inflated` must not cut them short."""
     candidates = (hashlib.sha256(str(i).encode()).digest() * 4 for i in range(10_000))
@@ -446,13 +448,14 @@ def test_inflating_a_compressed_record_cuts_each_stream_at_its_length(binary_run
     assert payload in inflated(document)
     # A real compressed record reads back as its uncompressed twin (and is smaller).
     hollow = _without_held_out_rows(binary_run)
-    plain = rp.build_report(hollow, {}, prepared_summary=None, settings={}, compress=False)
-    compressed = rp.build_report(hollow, {}, prepared_summary=None, settings={})
+    plain = hollow_record.data  # the same record, built uncompressed
+    compressed = rp.build_report(hollow, {}, prepared_summary=_another_samples_account(prepared), settings={})
     assert compressed.startswith(b"%PDF-") and len(compressed) < len(plain)
     assert rp.count_pages(compressed) == rp.count_pages(plain)
 
     def stamped(data: bytes) -> str:
-        return re.sub(r"Built \d{4}-\d\d-\d\d \d\d:\d\d UTC", "Built", pdf_text(data))
+        # The build time (footer and cover) moves on between the two builds, possibly into the next minute.
+        return re.sub(r"\d{4}-\d\d-\d\d \d\d:\d\d UTC", "<built>", pdf_text(data))
 
     assert stamped(inflated(compressed)) == stamped(plain)
     assert outline(inflated(compressed)) == outline(plain)
@@ -472,6 +475,21 @@ def test_multiclass_record_with_real_charts(prepared: PreparedDataset) -> None:
     report = rp.render_report(run, evaluate.evaluate_run(run), prepared_summary=rp.summarise_prepared(prepared),
                               settings={})
     assert not report.problems and report.images >= 12 and report.size_bytes < 3 * 2**20
+
+
+def _another_samples_account(prepared: PreparedDataset) -> dict[str, Any]:
+    """The sample sheet's account of ``prepared`` with a fingerprint no run was fitted on."""
+    return dict(rp.summarise_prepared(prepared), fingerprint="0" * 64)
+
+
+@pytest.fixture(scope="module")
+def hollow_record(prepared: PreparedDataset, binary_run: TrainingRun) -> rp.RenderedReport:
+    """The uncompressed record of the binary run as loaded without its held-out rows, handed the account of another
+    sample (which it must not use) and no settings; built once for the tests that read it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(viz, "to_png", fake_png)
+        return rp.render_report(_without_held_out_rows(binary_run), {}, prepared_summary=_another_samples_account(
+            prepared), settings={}, compress=False)
 
 
 def _without_held_out_rows(run: TrainingRun) -> TrainingRun:
@@ -536,20 +554,16 @@ def test_a_two_class_multiclass_record_keeps_headings_over_their_numbers(
                                                                  "ROC-AUC", "Average precision")]
 
 
-def test_a_sample_account_of_another_sample_is_not_used(prepared: PreparedDataset, binary_run: TrainingRun,
-                                                         quick_charts: None) -> None:
-    summary = dict(rp.summarise_prepared(prepared), fingerprint="0" * 64)
-    report = rp.render_report(_without_held_out_rows(binary_run), {}, prepared_summary=summary, settings={},
-                              compress=False)  # the sample sheet is the same with or without readings
-    text = pdf_text(report.data)
+def test_a_sample_account_of_another_sample_is_not_used(hollow_record: rp.RenderedReport) -> None:
+    # The hollow record was handed the account of another sample (the sample sheet is the same with or without
+    # readings).
+    text = pdf_text(hollow_record.data)
     assert "not the one this run was fitted on" in text
     assert "Classes before and after sampling" not in text
 
 
-def test_a_run_without_held_out_rows_gets_its_recorded_readings(binary_run: TrainingRun,
-                                                                 quick_charts: None) -> None:
-    hollow = _without_held_out_rows(binary_run)
-    report = rp.render_report(hollow, {}, prepared_summary=None, settings={}, compress=False)
+def test_a_run_without_held_out_rows_gets_its_recorded_readings(hollow_record: rp.RenderedReport) -> None:
+    report = hollow_record
     titles = outline(report.data)
     assert "Confusion matrices" not in titles and "Curves" not in titles
     assert {"Readings", "Timing", "Notes and limitations"} <= set(titles)
@@ -566,17 +580,24 @@ def test_a_cancelled_build_stops_at_once(binary_run: TrainingRun) -> None:
                          cancel=token)
 
 
-def test_a_chart_that_fails_is_reported_not_fatal(multiclass_run: TrainingRun,
+def test_a_chart_that_fails_is_reported_not_fatal(multiclass_run: TrainingRun, binary_run: TrainingRun,
                                                   monkeypatch: pytest.MonkeyPatch) -> None:
     def broken(chart: Any, scale: float = 2, *, background: str | None = None) -> bytes:
         raise RuntimeError("renderer unavailable")
 
     monkeypatch.setattr(viz, "to_png", broken)
+    # The full multi-class record: every chart site (readings, confusion grid, per-class curves, importance,
+    # timing) fails, and the build still finishes with each failure named.
     report = rp.render_report(multiclass_run, evaluate.evaluate_run(multiclass_run), prepared_summary=None,
                               settings={}, compress=False)
-    assert report.images == 0 and report.problems
+    assert report.images == 0 and len(report.problems) >= len(multiclass_run.ok_channels()) + 3
     assert all("renderer unavailable" in p for p in report.problems)
     assert "could not be drawn" in pdf_text(report.data)
+    # The short record of a run loaded without its held-out rows (and with no sample account) as well.
+    hollow = rp.render_report(_without_held_out_rows(binary_run), {}, prepared_summary=None, settings={},
+                              compress=False)
+    assert hollow.images == 0 and hollow.problems and all("renderer unavailable" in p for p in hollow.problems)
+    assert {"Readings", "Timing", "Notes and limitations"} <= set(outline(hollow.data))
 
 
 # --------------------------------------------------------------------------------------------------------------

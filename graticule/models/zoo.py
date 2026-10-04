@@ -13,7 +13,9 @@ whose stochastic updates are more easily thrown off by a few very heavy rows) so
 cannot dominate, and the whole set rescaled to sum to ``n``. See :func:`balanced_weights`.
 
 Profiles. ``"full"`` uses the hyperparameters of the specification; ``"test"`` shrinks every model (a few trees,
-rounds or iterations) so that the test suite can train all five channels in seconds.
+rounds or iterations: 20 trees grown on one thread, 10 boosting rounds) so that the test suite can train all five
+channels in seconds. The test profile's forest stays on one thread because starting a thread pool for every small
+fit and prediction costs more than it saves; the full profile uses every core.
 
 Two small helpers live here because fitted channels keep them: :class:`ObservableMLP` (scikit-learn's MLP with a
 per-epoch hook, so a fit can report progress and stop when cancelled; training itself is unchanged) and
@@ -183,10 +185,10 @@ def _scaled_steps() -> list[tuple[str, object]]:
 
 def _build_forest(ctx: BuildContext) -> Pipeline:
     """Random forest; the fit grows it in warm-start chunks (see ``graticule.models.train``)."""
-    trees = 150 if ctx.profile == "full" else 20
+    full = ctx.profile == "full"
     model = RandomForestClassifier(
-        n_estimators=trees, max_features="sqrt", min_samples_leaf=2, max_samples=0.5, bootstrap=True,
-        n_jobs=-1, random_state=ctx.seed,
+        n_estimators=150 if full else 20, max_features="sqrt", min_samples_leaf=2, max_samples=0.5, bootstrap=True,
+        n_jobs=-1 if full else 1, random_state=ctx.seed,
     )
     return Pipeline([("sanitize", FlowSanitizer()), (MODEL_STEP, model)])
 
@@ -196,7 +198,7 @@ def _build_xgboost(ctx: BuildContext) -> Pipeline:
     full = ctx.profile == "full"
     binary = ctx.n_classes == 2
     model = XGBClassifier(
-        tree_method="hist", max_depth=8, learning_rate=0.15, n_estimators=300 if full else 30,
+        tree_method="hist", max_depth=8, learning_rate=0.15, n_estimators=300 if full else 10,
         early_stopping_rounds=20 if full else 10, subsample=0.8, colsample_bytree=0.8, n_jobs=4,
         random_state=ctx.seed, objective="binary:logistic" if binary else "multi:softprob",
         eval_metric="logloss" if binary else "mlogloss",

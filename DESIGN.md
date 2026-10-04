@@ -279,3 +279,28 @@ Built by four implementers in parallel, integrated, reviewed through three lense
   so another session's save in progress is never offered).
 - **Loading a set that holds CH3** re-scores its held-out rows with per-block progress, and the opt-in caption says so.
 - **Test suite** now 603 tests (567 by default): about 2.5 minutes on mains power, about 4.5 on battery.
+
+## Follow-ups — recorded-traffic readings, station addresses, polish, screenshots (2026-10-04)
+- **Recorded-traffic readings (owner request).** Readings stay counted over *distinct* flows by default, because repeats
+  must be merged before the split. 03 Measure, the PDF and the CSV exports add a clearly labelled estimate over the
+  *recorded traffic*: each held-out row is weighted by `copies / f`, the rows of the cleaned files it stands for (exact
+  repeats and rows made identical over the chosen columns) divided by its class's sampling share at 01 Sample. It is
+  computed once per run, never refits, and is never the default.
+- **Honest uncertainty.** The standard error covers only the spread among held-out rows, and says so. Because a few flows
+  are recorded thousands of times (one DoS Hulk flow 9,329 times in Wednesday), the estimate can swing between draws;
+  01 Sample now records how often every distinct flow occurs, 02 Fit lists the heavily repeated ones (≥ 100 copies and
+  ≥ 0.5 % of their class) and which were held out, and 03 Measure / the PDF show a per-channel *range* covering every
+  verdict those unseen heavy flows could have, plus a caution when they could move a reading by 0.01 or more. Checked on
+  Wednesday over five draws: the whole file's true reading fell inside the range every time.
+- **Every station has its own address** (`/sample`, `/fit`, … `/bench`). A hidden page at `/` hands over to 01 Sample on
+  a session's first visit; a later visit to `/` (the Back button) draws 01 Sample in place, so Back can still leave the app.
+- **Narrow screens.** The class chart prints its counts in a column of their own; the stepper scrolls the current station
+  into view with a small static script (the app's only `unsafe_allow_javascript`, holding no user data).
+- **Readable at 1440 px.** 03 Measure's leaderboard holds readings only (balanced accuracy first, compact headings); fit
+  time, flows per second (whole numbers) and single-flow latency moved to its Timing table. 02 Fit picks channels with
+  wrapping buttons and lists channel notes under its table; the Logbook tables were narrowed; 03 Measure earns its ✓.
+- **Test suite.** The test-only model profile uses 10 XGBoost rounds and single-threaded forests (the full profile is
+  unchanged); with lighter fixtures the default run is about 11 % faster: 605 tests in ~130 s on mains power. Restart
+  checks (a saved set reloaded and the history read in a fresh process) stay in the default run.
+- **README screenshots** were captured from a separate app instance with temporary settings, a neutral data-folder name
+  and no dataset rows (04 Probe shows a typical flow; 05 Assay is cropped above the scored rows).

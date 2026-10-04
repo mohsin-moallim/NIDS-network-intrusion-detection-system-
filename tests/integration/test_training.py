@@ -1,6 +1,6 @@
 """02 Fit on small synthetic samples: matrices, all five channels, leakage guards, failures and determinism.
 
-Every fit uses ``profile="test"`` (tiny models) on about 3,000 generated flows, so the whole module runs in
+Every fit uses ``profile="test"`` (tiny models) on about 1,500 generated flows, so the whole module runs in
 seconds. The destination port stays out of every feature set here: in the generator it nearly identifies some
 attacks.
 """
@@ -19,7 +19,7 @@ import pytest
 
 from graticule.data import sampling
 from graticule.data.clean import row_hashes
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from graticule.data.prepare import DataRequest, PreparedDataset
 from graticule.data.sampling import SingleClassError
 from graticule.evaluate import quick_metrics
 from graticule.features import rank_features
@@ -40,15 +40,17 @@ from graticule.models.train import (
 )
 from graticule.models.zoo import MODEL_KEYS, BuildContext
 from graticule.schema import BENIGN, DESTINATION_PORT, LABEL
+from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.integration
-SEED = 11
+SEED = 7
 
 
 @pytest.fixture(scope="module")
 def prepared() -> PreparedDataset:
-    """About 3,000 synthetic flows (six classes)."""
-    return prepare_dataset(DataRequest(source="synthetic", synthetic_flows=3_000, seed=SEED))
+    """About 1,500 synthetic flows (six classes), shared with test_persist.py, test_evaluate.py and the other
+    modules that use this sample (see shared_sample)."""
+    return shared_sample(DataRequest(source="synthetic", synthetic_flows=1_500, seed=SEED))
 
 
 def _request(**changes: object) -> TrainRequest:
@@ -65,8 +67,10 @@ def _fit(prepared: PreparedDataset, request: TrainRequest) -> tuple[TrainingData
 
 @pytest.fixture(scope="module")
 def runs(prepared: PreparedDataset) -> dict[str, tuple[TrainingData, TrainingRun]]:
-    """All five channels fitted once per mode."""
-    return {mode: _fit(prepared, _request(mode=mode)) for mode in ("binary", "multiclass")}
+    """All five channels fitted once per mode, with their matrices (the same fits as test_persist.py's, made once
+    per session; see shared_fit). Tests that fit again, or fit with a patched builder, use ``_fit``."""
+    fitted = {mode: shared_fit(prepared, _request(mode=mode)) for mode in ("binary", "multiclass")}
+    return {mode: (run.data, run) for mode, run in fitted.items()}
 
 
 def _with_frame(prepared: PreparedDataset, frame: pd.DataFrame) -> PreparedDataset:
@@ -277,6 +281,7 @@ def test_benign_only_binary_data_raises_a_friendly_error(prepared: PreparedDatas
 # --------------------------------------------------------------------------------------------------------------
 # Top-K never looks at test rows
 # --------------------------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("quick_ranking")  # a 20-round ranking model (tests/conftest.py)
 def test_topk_ranks_on_training_rows_only(prepared: PreparedDataset, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(mode="binary", feature_mode="topk", top_k=8)
     splits: list[sampling.SplitIndices] = []

@@ -2,8 +2,22 @@
 
 Everything here is read from the current run (:func:`ui.state.current_run`). The readings of every channel are
 computed once per run by :func:`graticule.evaluate.evaluate_run` and kept on the run object, so changing a widget on
-this page only redraws: it never recomputes the readings and never refits anything. Two measurements do extra work,
-and only when their buttons are pressed:
+this page only redraws: it never recomputes the readings and never refits anything.
+
+The first control picks what a reading counts. "Distinct flows" (the default) counts every held-out row once, as
+every reading of the brief does. "Recorded traffic (estimate)" weights each held-out row by the recorded flows it
+stands for (:func:`graticule.evaluate.traffic_readings`, computed once per run from the stored probabilities, the
+first time the view or a download needs it): the leaderboard, its dot plot, the class chart beside it, the
+confusion matrices and the per-class table follow it; the curves, importance, timing and cross-validation always
+count distinct flows. When heavily repeated flows that missed the held-out rows decide much of the estimate, a
+caution and a table of where each channel's readings can lie come with it. When a run cannot be weighted (no
+repeat counts or sampling shares recorded) the control is replaced by a note saying why.
+
+The leaderboard holds the readings only (balanced accuracy first, compact headings with the full names as help) so
+it fits a 1440-pixel page in either view and mode; fit time, scoring speed, single-flow latency and the rows each
+channel was fitted on are tabled under Timing.
+
+Two measurements do extra work, and only when their buttons are pressed:
 
 * permutation importance (held-out rows only; nothing is fitted), and
 * cross-validation (fresh channel copies fitted in folds of the TRAINING rows; the held-out rows play no part).
@@ -31,6 +45,7 @@ import streamlit as st
 
 from graticule import evaluate, theme, viz
 from graticule.evaluate import ChannelEvaluation, EvaluationTask
+from graticule.report import exports
 from graticule.models.jobs import JobBusyError, slot_holder, sync_training_requested
 from graticule.models.train import TrainingRun
 from graticule.schema import is_normal_traffic
@@ -58,6 +73,43 @@ ROC_OPTIONS = ("Whole curve", f"Low false-positive corner (up to {ROC_ZOOM:.0%})
 SCORE_FORMAT = "%.4f"
 #: Attribute of a run holding the chart specs drawn here (see :func:`_kept_chart`).
 CHART_SPECS_ATTR = "measure_chart_specs"
+#: What a reading counts: every held-out row once (the default), or the recorded flows each one stands for.
+COUNT_KEY = "ms_count_over"
+COUNT_OPTIONS = ("Distinct flows", "Recorded traffic (estimate)")
+DISTINCT, TRAFFIC = "distinct", "traffic"
+#: Compact headings of the leaderboard (the full name is the column's help); columns without one keep their name.
+SHORT_LABELS: dict[str, str] = {
+    "Balanced accuracy": "Bal. accuracy", "Precision (attack)": "Precision", "Recall (attack)": "Recall",
+    "F1 (attack)": "F1", "F1 weighted": "F1 wtd", "Precision macro": "Prec. macro",
+    "Precision weighted": "Prec. wtd", "Recall macro": "Rec. macro", "Recall weighted": "Rec. wtd",
+    "Average precision": "Avg. prec.", "Gap to best": "Gap", "Balanced accuracy s.e.": "Bal. s.e.",
+    "Accuracy s.e.": "Acc. s.e.",
+}
+#: What each leaderboard column means (shown as its help).
+SCORE_HELP: dict[str, str] = {
+    "Balanced accuracy": "Balanced accuracy: mean recall over the classes, so a rare class counts as much as a common "
+                         "one.",
+    "Accuracy": "Accuracy: share of the flows read correctly.",
+    "Precision (attack)": "Precision of the attack class: share of the attack verdicts that were attacks.",
+    "Recall (attack)": "Recall of the attack class: share of the attacks the channel caught.",
+    "F1 (attack)": "F1 of the attack class: the harmonic mean of its precision and recall.",
+    "F1 macro": "F1 macro: F1 averaged over the classes, each counting the same.",
+    "F1 weighted": "F1 weighted: F1 averaged with each class weighted by its size.",
+    "Precision macro": "Precision macro: precision averaged over the classes, each counting the same.",
+    "Recall macro": "Recall macro: recall averaged over the classes, each counting the same.",
+    "Recall weighted": "Recall weighted: recall averaged with each class weighted by its size; this always equals "
+                       "accuracy.",
+    "ROC-AUC": "ROC-AUC: area under the ROC curve (one-vs-rest macro for several classes).",
+    "Average precision": "Average precision: area under the precision-recall curve.",
+    "Gap to best": "Gap to best: best balanced accuracy minus this channel's.",
+}
+#: The two standard-error columns of the recorded-traffic view, each placed right after its score.
+SE_AFTER: dict[str, str] = {"Balanced accuracy": "Balanced accuracy s.e.", "Accuracy": "Accuracy s.e."}
+SE_HELP = ("Rough standard error from the spread among the held-out rows only. It cannot see heavily repeated flows "
+           "that missed the held-out rows, so it understates the uncertainty when they matter (see the caution and "
+           "the range table above).")
+#: Columns of the timing table (under Timing).
+TIMING_COLUMNS: tuple[str, ...] = ("Channel", "Fit s", "Flows/s", "Single-flow ms", "Rows used", "Training rows")
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -118,6 +170,14 @@ def held_out_line(run: TrainingRun) -> str:
     counts = evaluate.held_out_counts(run)
     parts = [f"{class_text(name)} {count:,}" for name, count in counts.items()]
     return f"Measured on {sum(counts.values()):,} held-out rows: " + " · ".join(parts) + "."
+
+
+def traffic_line(traffic: dict[str, evaluate.TrafficEvaluation]) -> str:
+    """The estimated recorded flows per true class in one line, with shape cues (what the weighted readings cover)."""
+    first = next(iter(traffic.values()))
+    parts = [f"{class_text(name)} {evaluate.flows_text(value)}" for name, value in first.flows_by_class.items()]
+    return (f"Weighted to {evaluate.flows_text(first.flows)} estimated recorded flows: " + " · ".join(parts)
+            + ".")
 
 
 def run_key(name: str, run: TrainingRun) -> str:
@@ -311,53 +371,80 @@ def task_panel(task_id: str, session_key: str) -> None:
 # --------------------------------------------------------------------------------------------------------------
 # Sections
 # --------------------------------------------------------------------------------------------------------------
-def _score_config(columns: Sequence[str]) -> dict[str, Any]:
-    """Column formats for a table of scores and timings."""
+def _score_config(columns: Sequence[str], view: str = DISTINCT) -> dict[str, Any]:
+    """Column formats of the leaderboard: compact headings (:data:`SHORT_LABELS`) with the full meaning as help,
+    four decimals for scores. In the recorded-traffic view the help says the weights are the
+    estimated recorded flows."""
+    weighted_by = "estimated recorded flows" if view == TRAFFIC else "held-out rows"
     config: dict[str, Any] = {}
     for name in columns:
-        if name in viz.SCORE_COLUMNS or name == "Gap to best":
-            config[name] = st.column_config.NumberColumn(name, format=SCORE_FORMAT)
-        elif name in ("Fit s", "Single-flow ms"):
-            config[name] = st.column_config.NumberColumn(name, format="%.2f")
-        elif name in ("Flows/s", "Rows used", "Training rows", "support", "Rows"):
-            config[name] = st.column_config.NumberColumn(name, format="localized")
-    config["Balanced accuracy"] = st.column_config.NumberColumn(
-        "Balanced accuracy", format=SCORE_FORMAT, help="Mean recall over the classes: a rare class counts as much "
-        "as a common one.")
-    config["Gap to best"] = st.column_config.NumberColumn(
-        "Gap to best", format=SCORE_FORMAT, help="Best balanced accuracy minus this channel's.")
-    config["Rows used"] = st.column_config.NumberColumn(
-        "Rows used", format="localized", help="Training rows the channel was fitted on.")
-    config["Flows/s"] = st.column_config.NumberColumn(
-        "Flows/s", format="localized", help="Held-out flows scored per second, in blocks of 5,000.")
-    if "Recall weighted" in columns:
-        config["Recall weighted"] = st.column_config.NumberColumn(
-            "Recall weighted", format=SCORE_FORMAT, help="Recall averaged with each class weighted by its rows; "
-            "this always equals accuracy.")
-    if "Precision weighted" in columns:
-        config["Precision weighted"] = st.column_config.NumberColumn(
-            "Precision weighted", format=SCORE_FORMAT, help="Precision averaged with each class weighted by its "
-            "held-out rows.")
-    config["Single-flow ms"] = st.column_config.NumberColumn(
-        "Single-flow ms", format="%.2f", help="Median time to score one flow on its own (up to 30 calls, at least 5).")
+        label = SHORT_LABELS.get(name, name)
+        if name in SE_AFTER.values():
+            config[name] = st.column_config.NumberColumn(label, format=SCORE_FORMAT, help=SE_HELP)
+        elif name in viz.SCORE_COLUMNS or name == "Gap to best":
+            help_text = SCORE_HELP.get(name, name)
+            if name == "Precision weighted":
+                help_text = f"Precision weighted: precision averaged with each class weighted by its {weighted_by}."
+            elif name == "F1 weighted":
+                help_text = f"F1 weighted: F1 averaged with each class weighted by its {weighted_by}."
+            elif name == "Recall weighted":
+                help_text = (f"Recall weighted: recall averaged with each class weighted by its {weighted_by}; "
+                             "this always equals accuracy.")
+            config[name] = st.column_config.NumberColumn(label, format=SCORE_FORMAT, help=help_text)
     return config
 
 
-def _overview(run: TrainingRun, evals: dict[str, ChannelEvaluation], board: pd.DataFrame, mode: Mode) -> None:
-    """(1) The leaderboard, its dot plot and the held-out class distribution."""
+def board_columns(board: pd.DataFrame, view: str = DISTINCT) -> list[str]:
+    """The leaderboard columns shown, in order: the channel, every score (balanced accuracy first) and the gap to
+    the best channel; in the recorded-traffic view each standard error right after its score. Timing and rows are
+    tabled under Timing (:func:`timing_frame`)."""
+    scores = [name for name in board.columns if name in viz.SCORE_COLUMNS]
+    out = ["Channel"]
+    for name in scores:
+        out.append(name)
+        error = SE_AFTER.get(name)
+        if view == TRAFFIC and error in board.columns:
+            out.append(error)
+    return out + ["Gap to best"]
+
+
+def timing_frame(board: pd.DataFrame) -> pd.DataFrame:
+    """Fit time, scoring speed (whole flows per second), single-flow latency and rows of every channel, in the
+    leaderboard's order."""
+    frame = board[[c for c in TIMING_COLUMNS if c in board.columns]].copy()
+    if "Flows/s" in frame.columns:
+        speed = frame["Flows/s"].to_numpy(dtype=np.float64)
+        frame["Flows/s"] = pd.array([int(round(v)) if math.isfinite(v) else None for v in speed], dtype="Int64")
+    return frame
+
+
+def _overview(run: TrainingRun, evals: dict[str, ChannelEvaluation], board: pd.DataFrame, mode: Mode,
+              traffic: dict[str, evaluate.TrafficEvaluation] | None = None) -> None:
+    """(1) The leaderboard, its dot plot and the held-out class distribution.
+
+    With ``traffic`` (the recorded-traffic view) ``board`` is the weighted leaderboard, and the class chart shows the
+    estimated recorded flows per class instead of the held-out rows.
+    """
     st.subheader("Readings overview", anchor=False)
-    shown = components.shown_scores(board.drop(columns=["key", "Training rows"]), viz.SCORE_COLUMNS)
-    st.dataframe(shown, hide_index=True, width="stretch", column_config=_score_config(list(shown.columns)))
+    view = TRAFFIC if traffic else DISTINCT
+    shown = components.shown_scores(board[board_columns(board, view)], viz.SCORE_COLUMNS)
+    st.dataframe(shown, hide_index=True, width="stretch", column_config=_score_config(list(shown.columns), view))
+    st.caption("Fit time, scoring speed, single-flow latency and the training rows each channel used are under "
+               "Timing below.")
     note = svm_rows_note(run)
     if note:
         components.chips([note])
-    st.caption(held_out_line(run))
-    repeats = evaluate.repeats_sentence(evaluate.held_out_repeats(run))
-    if repeats:
-        st.caption(repeats)
+    if traffic:
+        st.caption(traffic_line(traffic))
+    else:
+        st.caption(held_out_line(run))
+        repeats = evaluate.repeats_sentence(evaluate.held_out_repeats(run))
+        if repeats:
+            st.caption(repeats)
     if not board.empty:
         best = board.iloc[0]
-        line = (f"Best balanced accuracy: **{html.escape(str(best['Channel']))}**, "
+        over = " over the recorded traffic (estimate)" if traffic else ""
+        line = (f"Best balanced accuracy{over}: **{html.escape(str(best['Channel']))}**, "
                 f'<span class="g-mono">{theme.score_text(best["Balanced accuracy"])}</span>')
         if len(board) > 1:
             runner = board.iloc[1]
@@ -365,36 +452,65 @@ def _overview(run: TrainingRun, evals: dict[str, ChannelEvaluation], board: pd.D
                      f'<span class="g-mono">{float(runner["Gap to best"]):.4f}</span> behind')
         st.markdown(line + ".", unsafe_allow_html=True)
     left, right = st.columns([3, 2], gap="medium")
+    if traffic:
+        first = next(iter(traffic.values()))
+        with left:
+            _kept_chart(run, ("board", TRAFFIC, mode), lambda: viz.leaderboard_chart(
+                board, mode, title="Readings by channel: recorded traffic",
+                subtitle=f"Estimates: each held-out row weighted by the recorded flows it stands for "
+                         f"({evaluate.flows_text(first.flows)} in all)."))
+        with right:
+            _kept_chart(run, ("held_out", TRAFFIC, mode), lambda: viz.held_out_classes_chart(
+                first.flows_by_class, mode, title="Recorded flows per class", unit="Estimated recorded flows",
+                subtitle="What the weighted readings stand for (estimates)."))
+        return
     with left:
-        _kept_chart(run, ("board", mode), lambda: viz.leaderboard_chart(
+        _kept_chart(run, ("board", DISTINCT, mode), lambda: viz.leaderboard_chart(
             board, mode, subtitle=f"Each mark is one channel's reading on {len(run.data.y_test):,} held-out rows."))
     with right:
-        _kept_chart(run, ("held_out", mode), lambda: viz.held_out_classes_chart(evaluate.held_out_counts(run), mode))
+        _kept_chart(run, ("held_out", DISTINCT, mode), lambda: viz.held_out_classes_chart(
+            evaluate.held_out_counts(run), mode))
 
 
-def _confusions(run: TrainingRun, evals: dict[str, ChannelEvaluation], mode: Mode) -> None:
-    """(2) Every channel's confusion matrix, side by side."""
+def _confusions(run: TrainingRun, evals: dict[str, ChannelEvaluation], mode: Mode,
+                traffic: dict[str, evaluate.TrafficEvaluation] | None = None) -> None:
+    """(2) Every channel's confusion matrix, side by side (estimated recorded flows in the traffic view)."""
     st.subheader("Confusion matrices", anchor=False)
     shown = st.radio("Shade and lead with", SHOW_OPTIONS, horizontal=True, key="ms_cm_show",
                      help="Row %: share of each true class's rows that went to each predicted class. Counts: "
-                          "rows, shaded on a log scale.")
+                          "rows (estimated recorded flows in the recorded-traffic view), shaded on a log scale.")
     show = "count" if shown == "Counts" else "share"
     classes = list(run.data.classes)
     per_row = 3 if len(classes) <= 3 else 2 if len(classes) <= 8 else 1
     keys = list(evals)
+    shading = "row % of estimated recorded flows" if show != "count" else "estimated recorded flows (log scale)"
     for start in range(0, len(keys), per_row):
         columns = st.columns(per_row, gap="medium")
         for column, key in zip(columns, keys[start:start + per_row]):
             # Each matrix keeps its own size and scrolls sideways in a narrow column instead of overlapping.
             with column, st.container(key=f"g_cm_{key}"):
-                _kept_chart(run, ("confusion", key, show, mode), lambda key=key: viz.confusion_chart(
-                    evals[key].confusion, classes, mode, show=show, title=channel_label(key)), width="content")
-    st.caption("Rows: true class. Columns: the channel's verdict. The diagonal holds the flows read correctly.")
+                if traffic and key in traffic:
+                    _kept_chart(run, ("confusion", TRAFFIC, key, show, mode), lambda key=key: viz.confusion_chart(
+                        traffic[key].confusion, classes, mode, show=show, title=channel_label(key),
+                        subtitle=f"Shade: {shading}.", unit="Estimated flows"), width="content")
+                else:
+                    _kept_chart(run, ("confusion", DISTINCT, key, show, mode), lambda key=key: viz.confusion_chart(
+                        evals[key].confusion, classes, mode, show=show, title=channel_label(key)), width="content")
+    if traffic:
+        st.caption("Rows: true class. Columns: the channel's verdict. Cells hold estimated recorded flows, rounded "
+                   "to whole flows; the diagonal holds the flows read correctly.")
+    else:
+        st.caption("Rows: true class. Columns: the channel's verdict. The diagonal holds the flows read correctly.")
 
 
-def _curves(run: TrainingRun, evals: dict[str, ChannelEvaluation], mode: Mode) -> None:
-    """(3) ROC and precision-recall curves: all channels overlaid (binary), or per class for one channel."""
+def _curves(run: TrainingRun, evals: dict[str, ChannelEvaluation], mode: Mode, view: str = DISTINCT) -> None:
+    """(3) ROC and precision-recall curves: all channels overlaid (binary), or per class for one channel.
+
+    The curves always count each distinct flow once; in the recorded-traffic view a note says so.
+    """
     st.subheader("Curves", anchor=False)
+    if view == TRAFFIC:
+        st.caption("The curves count each distinct held-out flow once, in either view.")
     classes = list(run.data.classes)
     view = st.radio("ROC view", ROC_OPTIONS, horizontal=True, key="ms_roc_zoom",
                     help="Near-perfect curves crowd the top-left corner; the zoomed view spreads them out.")
@@ -435,17 +551,27 @@ def _curves(run: TrainingRun, evals: dict[str, ChannelEvaluation], mode: Mode) -
             title=f"{channel_label(key)}: one-vs-rest precision-recall"))
 
 
-def _per_class_table(ev: ChannelEvaluation) -> None:
-    """One channel's per-class readings as a table (class names carry their shape cue)."""
-    table = ev.per_class.copy()
+def _per_class_table(ev: ChannelEvaluation, traffic: evaluate.TrafficEvaluation | None = None) -> None:
+    """One channel's per-class readings as a table (class names carry their shape cue); with ``traffic``, the
+    readings weighted to the recorded traffic, with each class's estimated recorded flows."""
+    if traffic is not None:
+        table = traffic.per_class.copy()
+        table["flows"] = np.rint(table["flows"].to_numpy(dtype=np.float64)).astype(np.int64)
+        count = "Estimated flows"
+    else:
+        table = ev.per_class.copy()
+        count = "Held-out rows"
     table["class"] = [class_text(str(c)) for c in table["class"]]
-    table = table.rename(columns={"class": "Class", "support": "Held-out rows", "precision": "Precision",
+    table = table.rename(columns={"class": "Class", "support": count, "flows": count, "precision": "Precision",
                                   "recall": "Recall", "f1": "F1", "roc_auc": "ROC-AUC",
                                   "average_precision": "Average precision"})
     scores = ("Precision", "Recall", "F1", "ROC-AUC", "Average precision")
     config = {name: st.column_config.NumberColumn(name, format=SCORE_FORMAT) for name in scores}
-    config["Held-out rows"] = st.column_config.NumberColumn("Held-out rows", format="localized")
+    config[count] = st.column_config.NumberColumn(count, format="localized")
     st.dataframe(components.shown_scores(table, scores), hide_index=True, width="stretch", column_config=config)
+    if traffic is not None:
+        st.caption("Weighted to the recorded traffic (estimates). The importance charts below count each distinct "
+                   "flow once.")
 
 
 def permutation_estimate(run: TrainingRun, key: str, single_flow_ms: float, rows: int,
@@ -495,14 +621,15 @@ def _permutation_block(run: TrainingRun, ev: ChannelEvaluation, mode: Mode, runn
 
 
 def _detail(run: TrainingRun, evals: dict[str, ChannelEvaluation], mode: Mode,
-            running: EvaluationTask | None) -> None:
-    """(4) One channel in detail: per-class readings, native and permutation importance."""
+            running: EvaluationTask | None, traffic: dict[str, evaluate.TrafficEvaluation] | None = None) -> None:
+    """(4) One channel in detail: per-class readings (weighted in the traffic view), native and permutation
+    importance (always on distinct flows)."""
     st.subheader("Channel detail", anchor=False)
     keys = list(evals)
     key = st.selectbox("Channel", keys, format_func=channel_label, key=run_key("ms_detail_channel", run))
     ev = evals[key]
     result = run.channels[key]
-    _per_class_table(ev)
+    _per_class_table(ev, (traffic or {}).get(key))
     notes = " ".join(str(n).strip() for n in (result.notes or []) if str(n).strip())
     if notes:
         st.caption(f"Fit notes: {notes}")
@@ -525,6 +652,19 @@ def _detail(run: TrainingRun, evals: dict[str, ChannelEvaluation], mode: Mode,
 def _timing(run: TrainingRun, board: pd.DataFrame, mode: Mode) -> None:
     """(5) Fit time, scoring speed and single-flow latency per channel."""
     st.subheader("Timing", anchor=False)
+    table = timing_frame(board)
+    st.dataframe(table, hide_index=True, width="stretch", column_config={
+        "Fit s": st.column_config.NumberColumn("Fit s", format="%.2f", help="Seconds spent fitting."),
+        "Flows/s": st.column_config.NumberColumn("Flows/s", format="localized",
+                                                 help="Held-out flows scored per second, in blocks of 5,000."),
+        "Single-flow ms": st.column_config.NumberColumn(
+            "Single-flow ms", format="%.2f", help="Median time to score one flow on its own (up to 30 calls, at "
+            "least 5)."),
+        "Rows used": st.column_config.NumberColumn("Rows used", format="localized",
+                                                   help="Training rows the channel was fitted on."),
+        "Training rows": st.column_config.NumberColumn("Training rows", format="localized",
+                                                       help="Rows in the training split."),
+    })
     left, right = st.columns(2, gap="medium")
     with left:
         _kept_chart(run, ("fit_s", mode), lambda: viz.timing_chart(
@@ -607,17 +747,36 @@ def _cross_validation(run: TrainingRun, mode: Mode, running: EvaluationTask | No
     _cv_results(run, mode)
 
 
+def board_csv(run: TrainingRun, evals: dict[str, ChannelEvaluation], board: pd.DataFrame) -> bytes:
+    """The leaderboard as CSV bytes (UTF-8 with a byte-order mark): the distinct-flow readings, plus the
+    recorded-traffic estimate in ``traffic_`` columns when the run has it (computed once per run if not yet)."""
+    traffic = evaluate.traffic_readings(run)
+    if traffic:
+        extra = evaluate.traffic_columns({k: traffic[k] for k in evals if k in traffic}, run.request.mode)
+        board = board.merge(extra, on="key", how="left", validate="one_to_one")
+    return board.to_csv(index=False).encode("utf-8-sig")
+
+
+def per_class_csv(run: TrainingRun, evals: dict[str, ChannelEvaluation]) -> bytes:
+    """Every channel's per-class readings as CSV bytes, with the recorded-traffic columns when the run has them."""
+    return exports.per_class_table(evals, evaluate.traffic_readings(run)).to_csv(index=False).encode("utf-8-sig")
+
+
 def _downloads(run: TrainingRun, evals: dict[str, ChannelEvaluation], board: pd.DataFrame) -> None:
-    """(7) Quick CSV downloads (UTF-8 with a byte-order mark, so spreadsheet programs read them correctly)."""
+    """(7) Quick CSV downloads (UTF-8 with a byte-order mark, so spreadsheet programs read them correctly).
+
+    The leaderboard and per-class tables hold the distinct-flow readings, plus the recorded-traffic estimate in
+    ``traffic_`` columns when the run has it (whichever view is shown). Both files are made when their button is
+    pressed, so a visit that never looks at the estimate never computes it.
+    """
     st.subheader("Downloads", anchor=False)
     columns = st.columns(3, gap="small")
     with columns[0]:
-        st.download_button("Leaderboard (CSV)", board.to_csv(index=False).encode("utf-8-sig"),
+        st.download_button("Leaderboard (CSV)", lambda: board_csv(run, evals, board),
                            file_name=f"graticule-leaderboard-{run.run_id}.csv", mime="text/csv",
                            key="ms_dl_board", on_click="ignore", width="stretch")
     with columns[1]:
-        per_class = evaluate.per_class_frame(evals)
-        st.download_button("Per-class readings (CSV)", per_class.to_csv(index=False).encode("utf-8-sig"),
+        st.download_button("Per-class readings (CSV)", lambda: per_class_csv(run, evals),
                            file_name=f"graticule-per-class-{run.run_id}.csv", mime="text/csv",
                            key="ms_dl_per_class", on_click="ignore", width="stretch")
     with columns[2]:
@@ -698,6 +857,76 @@ def _evaluations(run: TrainingRun) -> dict[str, ChannelEvaluation]:
         return evaluate.evaluate_run(run)
 
 
+def _traffic_readings(run: TrainingRun) -> dict[str, evaluate.TrafficEvaluation] | None:
+    """The run's recorded-traffic readings: computed once (with a spinner), read from the run afterwards; None when
+    the run cannot be weighted."""
+    if evaluate.traffic_unavailable_reason(run) is not None:
+        return None
+    cached = evaluate.cached_traffic_readings(run)
+    if cached is not None and set(cached) >= set(run.ok_channels()):
+        return evaluate.traffic_readings(run)
+    with st.spinner("Weighting the readings to the recorded traffic..."):
+        return evaluate.traffic_readings(run)
+
+
+def _count_control(run: TrainingRun) -> str:
+    """The "count each reading over" control; returns the view (distinct or traffic).
+
+    When the run cannot be weighted the control is left out and a caption says why (the readings stay distinct-flow
+    ones).
+    """
+    reason = evaluate.traffic_unavailable_reason(run)
+    if reason is not None:
+        st.caption("Every reading counts each distinct held-out flow once. A recorded-traffic estimate is not "
+                   f"available for this run: {reason}")
+        return DISTINCT
+    chosen = st.radio(
+        "Count each reading over", COUNT_OPTIONS, index=0, horizontal=True, key=COUNT_KEY,
+        help="Distinct flows: every held-out row counts once, however often the files recorded it (the primary "
+             "reading). Recorded traffic: each held-out row counts as often as the recorded flows it stands for, "
+             "an estimate of how the channel reads the traffic itself.")
+    return TRAFFIC if chosen == COUNT_OPTIONS[1] else DISTINCT
+
+
+def range_frame(traffic: dict[str, evaluate.TrafficEvaluation], order: Sequence[str]) -> pd.DataFrame:
+    """Each channel's estimate of balanced accuracy and accuracy with where it can lie (low, high) once the heavily
+    repeated flows that missed the held-out rows are counted as all misread or all read right, in ``order``."""
+    rows = []
+    for key in order:
+        reading = traffic.get(key)
+        if reading is None or not reading.bounds:
+            continue
+        bal_low, bal_high = reading.bounds["balanced_accuracy"]
+        acc_low, acc_high = reading.bounds["accuracy"]
+        rows.append({"Channel": channel_label(key), "Bal. accuracy": reading.metrics.get("balanced_accuracy"),
+                     "Bal. low": bal_low, "Bal. high": bal_high, "Accuracy": reading.metrics.get("accuracy"),
+                     "Acc. low": acc_low, "Acc. high": acc_high})
+    return pd.DataFrame(rows, columns=["Channel", "Bal. accuracy", "Bal. low", "Bal. high", "Accuracy", "Acc. low",
+                                       "Acc. high"])
+
+
+def _traffic_notes(run: TrainingRun, traffic: dict[str, evaluate.TrafficEvaluation], order: Sequence[str]) -> None:
+    """How the estimate is made, and when it rests on a few flows a caution with each channel's range."""
+    summary = evaluate.traffic_summary(run)
+    if summary is None:
+        return
+    st.caption(evaluate.traffic_sentence(summary) + " Curves, importance, timing and cross-validation still count "
+               "distinct flows.")
+    warning = evaluate.concentration_sentence(summary)
+    if not warning:
+        return
+    st.caption(f"**Caution.** {warning}")
+    if summary.heavy_concentrated:
+        table = range_frame(traffic, order)
+        if not table.empty:
+            scores = [c for c in table.columns if c != "Channel"]
+            st.dataframe(components.shown_scores(table, scores), hide_index=True, width="content",
+                         column_config={c: st.column_config.NumberColumn(c, format=SCORE_FORMAT) for c in scores})
+            st.caption("Low and high: the reading over the recorded traffic if every heavily repeated flow that missed "
+                       "the held-out rows were misread, or read right, with the other flows read as the held-out "
+                       "rows suggest.")
+
+
 def render() -> None:
     """Draw the 03 Measure station."""
     components.station_header("measure")
@@ -718,10 +947,18 @@ def render() -> None:
     evals = _evaluations(run)
     mode = _mode()
     board = evaluate.leaderboard(evals, run)
-    _overview(run, evals, board, mode)
-    _confusions(run, evals, mode)
-    _curves(run, evals, mode)
-    _detail(run, evals, mode, perm_task)
+    view = _count_control(run)
+    weighted = _traffic_readings(run) if view == TRAFFIC else None
+    if weighted is None:
+        view = DISTINCT
+    else:
+        _traffic_notes(run, weighted, [str(k) for k in board["key"]])
+    shown_board = evaluate.traffic_leaderboard(weighted, run, evals) if weighted else board
+    _overview(run, evals, shown_board, mode, weighted)
+    state.mark_done("measure")  # the readings are on screen: the stepper ticks 03 Measure (redrawn this run)
+    _confusions(run, evals, mode, weighted)
+    _curves(run, evals, mode, view)
+    _detail(run, evals, mode, perm_task, weighted)
     _timing(run, board, mode)
     _cross_validation(run, mode, cv_task)
     _downloads(run, evals, board)
