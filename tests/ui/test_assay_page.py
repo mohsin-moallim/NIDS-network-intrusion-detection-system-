@@ -16,13 +16,13 @@ import numpy as np
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from graticule import evaluate, scoring
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.models import train
-from graticule.models.jobs import claim_slot, release_slot, slot_holder
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.schema import FEATURES, LABEL
-from graticule.scoring import CONSENSUS, ScoredBatch
+from nids import evaluate, scoring
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.models import train
+from nids.models.jobs import claim_slot, release_slot, slot_holder
+from nids.models.train import TrainingRun, TrainRequest
+from nids.schema import FEATURES, LABEL
+from nids.scoring import CONSENSUS, ScoredBatch
 from tests.helpers import shared_fit, shared_sample, write_cic_csv
 from tests.ui.harness import errors, fresh_caches, goto, new_app  # noqa: F401
 from ui import state
@@ -118,7 +118,7 @@ def test_upload_score_read_and_download(fresh_caches: None, fitted: tuple[Prepar
     # The download: the full scored CSV, named after the run and the channel.
     download = at.get("download_button")
     assert [d.proto.id for d in download] and download[0].proto.label == "Download the scored CSV"
-    assert batch.file_name == f"graticule-assay-{run.run_id}-xgboost.csv"
+    assert batch.file_name == f"nids-assay-{run.run_id}-xgboost.csv"
     assert batch.to_csv_bytes().startswith(b"\xef\xbb\xbf")
     assert "05 Assay ✓" in [link.proto.label for link in at.get("page_link")]
 
@@ -207,7 +207,7 @@ def test_background_scoring_shows_progress_can_be_cancelled_and_finishes(
         fresh_caches: None, fitted: tuple[PreparedDataset, TrainingRun], tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch) -> None:
     prepared, run = fitted
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     gate = threading.Event()
     real = scoring.score_upload
 

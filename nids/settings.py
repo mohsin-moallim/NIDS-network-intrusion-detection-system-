@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Literal
 
-from graticule.schema import EXPECTED_BY_NAME, EXPECTED_FILES
+from nids.schema import EXPECTED_BY_NAME, EXPECTED_FILES
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_FILE = PROJECT_ROOT / "local_settings.json"

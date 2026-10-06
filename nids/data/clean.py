@@ -13,7 +13,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from graticule.schema import FEATURES, LABEL
+from nids.schema import FEATURES, LABEL
 
 NonFinitePolicy = Literal["drop", "impute", "recompute"]
 ConflictPolicy = Literal["keep", "majority", "drop"]
@@ -390,7 +390,7 @@ class DegenerateReport:
     def excluded(self) -> list[str]:
         """Every column to leave out of the "all numeric" feature set.
 
-        For other feature sets pass the report itself to :func:`graticule.features.select_features`: a copied
+        For other feature sets pass the report itself to :func:`nids.features.select_features`: a copied
         column should only be left out when the column it copies is chosen too (a curated set may hold the copy
         without the original).
         """

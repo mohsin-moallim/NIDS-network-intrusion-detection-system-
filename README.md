@@ -1,17 +1,18 @@
-# Graticule
+# NIDS — Network Intrusion Detection System
 
 *A measuring bench for training, testing and comparing network-intrusion classifiers.*
 
-Graticule is a local web app for studying machine-learning intrusion detection on labelled network-flow records. It
+NIDS is a local web app for studying machine-learning intrusion detection on labelled network-flow records. It
 reads the CIC-IDS2017 flow files (or makes its own synthetic flows when they are absent), cleans and samples them,
 and fits five classifiers on one shared, stratified split. Each model is a **channel** (CH1 to CH5) and each result
 is a **reading**, always given with the rows it was taken on and with balanced accuracy beside accuracy. From a fit
 you can compare the channels, explain a single verdict, replay held-out traffic as a live stream, score a whole CSV
 file, keep verified copies of the fitted channels and export a PDF record.
 
-A graticule is the ruled grid on an oscilloscope screen that every trace is read against; the app takes the same
-attitude to its models. It runs on one machine, needs no network connection once installed, and never copies the
-dataset into the project.
+The app works like a measuring bench. Its procedure is a row of numbered **stations**, from drawing a sample to
+writing the record, and every channel is read against the same held-out rows, so the readings can be set side by
+side. It runs on one machine, needs no network connection once installed, and never copies the dataset into the
+project.
 
 ## Contents
 
@@ -161,7 +162,14 @@ this session with ✓, and lets you open any of them directly.
 
 ## Setup
 
-From the project folder (the one that holds `app.py`), in PowerShell:
+Clone the repository (this needs Git) and step into its folder, in PowerShell:
+
+```powershell
+git clone https://github.com/mohsin-moallim/NIDS-network-intrusion-detection-system-.git
+cd NIDS-network-intrusion-detection-system-
+```
+
+In that project folder (the one that holds `app.py`), create the environment and install the dependencies:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -177,9 +185,11 @@ Then start the app. This is the only command you need from now on:
 - The install took about three minutes on the test laptop with the wheels already in pip's cache; a first download
   takes longer. `.\.venv\Scripts\python.exe -m pip check` should then answer "No broken requirements found."
 - `py --list` shows the Python versions installed; with only 3.12, use `py -3.12 -m venv .venv`.
-- Keep the project folder's path short, under about 90 characters (for example `C:\Users\<you>\Desktop\graticule`).
-  Streamlit ships deeply nested files, and under Windows' default 260-character path limit pip stops with
-  `[WinError 206] The filename or extension is too long` when the folder sits too deep.
+- Keep the project folder's path short, under about 90 characters (for example
+  `C:\Users\<you>\Desktop\NIDS-network-intrusion-detection-system-`). Streamlit ships deeply nested files, and under
+  Windows' default 260-character path limit pip stops with `[WinError 206] The filename or extension is too long`
+  when the folder sits too deep. To clone into a shorter folder name, add it to the command:
+  `git clone <address> nids`.
 - There is no need to activate the environment. Calling `.venv\Scripts\python.exe` directly always uses the right
   interpreter and avoids PowerShell's script-execution policy, which blocks `Activate.ps1` on many machines.
 - `requirements.txt` pins the direct dependencies. To reproduce the tested environment package for package, install
@@ -194,7 +204,7 @@ station works on synthetic flows, so you can try the whole procedure before down
 
 ## Dataset
 
-Graticule is built for **CIC-IDS2017** from the Canadian Institute for Cybersecurity (University of New Brunswick).
+NIDS is built for **CIC-IDS2017** from the Canadian Institute for Cybersecurity (University of New Brunswick).
 
 1. Request and download it from <https://www.unb.ca/cic/datasets/ids-2017.html>.
 2. Take the **MachineLearningCSV** set and extract it anywhere outside this project. You need the folder that
@@ -211,7 +221,7 @@ Graticule is built for **CIC-IDS2017** from the Canadian Institute for Cybersecu
    | `Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv` | Friday afternoon | port scan | 73 MB |
    | `Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv` | Friday afternoon | DDoS | 74 MB |
 
-3. Point Graticule at that folder, either at **Bench** → *Data folder* → *Save settings* (stored in the git-ignored
+3. Point NIDS at that folder, either at **Bench** → *Data folder* → *Save settings* (stored in the git-ignored
    `local_settings.json`), or with an environment variable set before starting the app:
 
    ```powershell
@@ -344,23 +354,24 @@ throughput (flows per second) and single-flow latency (ms). The held-out class c
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-At the last check (2026-10-04) the suite held 642 tests. The default run takes the 605 not marked `slow`: 222 s on
-the test laptop on battery, against 251 s for the same tests with the previous, larger test profile measured just
-before it (about 2 minutes on mains power, last measured before these changes). `-m realdata` selects 35 tests,
-`-m slow` 37 (the two overlap; together they are 47 tests and took about 10 minutes on battery), and the markers
-`unit`, `integration` and `ui` 393, 125 and 107. The default run includes the restart checks: a saved set reloaded
-in a second Python process predicts identically, and the run history reads back from a new process. Tests never
-touch your settings, saved sets or history (each works in its own temporary folder) and write no dataset rows
-anywhere. Real-data tests find the files through
-`"--data-dir=<folder>"` (write it as one quoted token with `=`; a separate path argument confuses pytest's search
-for its settings), else `NIDS_DATA_DIR`, else the Bench setting, and skip when there is no folder. The ten quick
-ones (headers, labels and the file catalogue) run in the default suite; the heavy ones only when asked for:
+At the last check (2026-10-05) the suite held 645 tests. The default run takes the 608 not marked `slow`: 200 s on
+the test laptop on battery. The day before, with the 605 tests it then held, it took 222 s on battery, against 251 s
+for the same tests with the previous, larger test profile measured just before it (about 2 minutes on mains power,
+last measured before these changes). `-m realdata` selects 35 tests, `-m slow` 37 (the two overlap; together they
+are 47 tests and took about 10 minutes on battery; on 2026-10-05 each selection on its own took about 5.5 minutes
+on battery), and the markers `unit`, `integration` and `ui` 394, 127 and 107. The default run includes the restart
+checks: a saved set reloaded in a second Python process predicts identically, and the run history reads back from a
+new process. Tests never touch your settings, saved sets or history (each works in its own temporary folder) and
+write no dataset rows anywhere. Real-data tests find the files through `"--data-dir=<folder>"` (write it as one
+quoted token with `=`; a separate path argument confuses pytest's search for its settings), else `NIDS_DATA_DIR`,
+else the Bench setting, and skip when there is no folder. The ten quick ones (headers, labels and the file
+catalogue) run in the default suite; the heavy ones only when asked for:
 
 | Command | What runs |
 |---|---|
-| `.\.venv\Scripts\python.exe -m pytest -q` | everything except tests marked `slow` (about 2 min on mains power, 3.5 to 4 min on battery) |
-| `.\.venv\Scripts\python.exe -m pytest -q -m realdata` | every real-data test: whole files, label counts, full-size fits, stations on a real run, benchmarks (about 4.5 min on mains power, 8 min on battery) |
-| `.\.venv\Scripts\python.exe -m pytest -q -m slow -s` | the long tests: benchmarks, fresh-process checks of 03 Measure on loaded sets, full PDF builds, heavy real-data runs (about 4 min on mains power, 10 min on battery; `-s` prints the benchmark tables) |
+| `.\.venv\Scripts\python.exe -m pytest -q` | everything except tests marked `slow` (about 2 min on mains power, 3.3 to 4 min on battery) |
+| `.\.venv\Scripts\python.exe -m pytest -q -m realdata` | every real-data test: whole files, label counts, full-size fits, stations on a real run, benchmarks (about 4.5 min on mains power, 5.5 to 8 min on battery) |
+| `.\.venv\Scripts\python.exe -m pytest -q -m slow -s` | the long tests: benchmarks, fresh-process checks of 03 Measure on loaded sets, full PDF builds, heavy real-data runs (about 4 min on mains power, 5.5 to 10 min on battery; `-s` prints the benchmark tables) |
 | `.\.venv\Scripts\python.exe -m pytest -q -m ui` | headless Streamlit checks of every station (`-m unit` and `-m integration` select the same way) |
 
 The timing benchmark can also be run directly. It reads the app's data folder (or `--data-dir`; synthetic flows when
@@ -375,10 +386,10 @@ peak working set, and writes nothing. The first line below takes about 40 s:
 ## Project structure
 
 ```text
-graticule/
+NIDS-network-intrusion-detection-system-/
 ├── app.py                    entry point: hands over to the shell in ui/shell.py
-├── graticule/                core library: data and machine learning, never imports Streamlit
-│   ├── __init__.py           package version
+├── nids/                     core library: data and machine learning, never imports Streamlit
+│   ├── __init__.py           app name, tagline and version
 │   ├── data/                 reader, cleaning, sampling, synthetic flows, sample preparation
 │   ├── models/               channel registry, training, background jobs, transforms, consensus
 │   ├── report/               PDF record (pdf.py) and CSV exports (exports.py)
@@ -403,7 +414,7 @@ graticule/
 │   └── components.py         stepper, badges, reading cards, CSS
 ├── scripts/bench.py          command-line timing benchmark
 ├── tests/                    unit/, integration/, ui/, realdata/, slow/, conftest.py, helpers.py
-├── static/                   graticule-icon.svg and fonts/ (three variable TTFs with their OFL licences)
+├── static/                   nids-icon.svg and fonts/ (three variable TTFs with their OFL licences)
 ├── .streamlit/config.toml    themes, fonts, upload limit, localhost-only server, no usage statistics
 ├── data/README.md            where to get the dataset (no data is kept here)
 ├── docs/screenshots/         the README images and how they were captured
@@ -425,7 +436,7 @@ graticule/
 
 - **One laboratory dataset.** CIC-IDS2017 was captured on one test network over five working days in 2017. Readings
   describe that dataset, not a deployment; other networks and later traffic differ in mix and behaviour.
-- **Flow records only.** Graticule reads CICFlowMeter-style CSV files. It does not capture packets or convert pcap
+- **Flow records only.** NIDS reads CICFlowMeter-style CSV files. It does not capture packets or convert pcap
   files; producing flow records from your own traffic needs CICFlowMeter or a compatible tool.
 - **Distinct flows, not traffic volume.** Exact repeats are merged before the split, as they must be, so every
   reading counts each distinct flow once. The files repeat some flows thousands of times (one DoS Hulk flow appears
@@ -454,7 +465,7 @@ graticule/
 
 ## Licence and credits
 
-Graticule is released under the MIT licence, © 2026 mohsin-moallim; see [LICENSE](LICENSE).
+NIDS is released under the MIT licence, © 2026 mohsin-moallim; see [LICENSE](LICENSE).
 
 The fonts in `static/fonts/` (Instrument Sans, Atkinson Hyperlegible Next and Atkinson Hyperlegible Mono) are
 distributed under the SIL Open Font License 1.1; their licence texts sit beside them as `OFL-*.txt`.

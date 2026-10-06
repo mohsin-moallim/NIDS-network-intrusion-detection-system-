@@ -1,8 +1,8 @@
 """01 Sample with the real synthetic generator, and the hand-over from a prepared sample to feature selection.
 
-These tests join modules written separately: the generator (``graticule.data.synthetic``), the preparation procedure
-(``graticule.data.prepare``), the degenerate-column check (``graticule.data.clean``), the class/split helpers
-(``graticule.data.sampling``) and feature selection (``graticule.features``). Nothing is written to disk.
+These tests join modules written separately: the generator (``nids.data.synthetic``), the preparation procedure
+(``nids.data.prepare``), the degenerate-column check (``nids.data.clean``), the class/split helpers
+(``nids.data.sampling``) and feature selection (``nids.features``). Nothing is written to disk.
 """
 
 from __future__ import annotations
@@ -11,14 +11,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule import schema
-from graticule.data import prepare
-from graticule.data.clean import find_degenerate_columns
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
-from graticule.data.sampling import class_order, stratified_split, target_for_mode
-from graticule.data.synthetic import SYNTHETIC_CLASSES, generate
-from graticule.features import rank_features, select_features
-from graticule.schema import FEATURES, LABEL, RATE_COLUMNS
+from nids import schema
+from nids.data import prepare
+from nids.data.clean import find_degenerate_columns
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from nids.data.sampling import class_order, stratified_split, target_for_mode
+from nids.data.synthetic import SYNTHETIC_CLASSES, generate
+from nids.features import rank_features, select_features
+from nids.schema import FEATURES, LABEL, RATE_COLUMNS
 
 pytestmark = pytest.mark.integration
 PORT = schema.DESTINATION_PORT

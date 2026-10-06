@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule import schema
-from graticule.data.synthetic import generate
-from graticule.features import FeatureChoice, rank_features, select_features
+from nids import schema
+from nids.data.synthetic import generate
+from nids.features import FeatureChoice, rank_features, select_features
 
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("quick_ranking")]
 

@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule import schema
-from graticule.data import synthetic
-from graticule.data.synthetic import ACK, FIN, PSH, RST, SYN, PacketTable, generate, measure
+from nids import schema
+from nids.data import synthetic
+from nids.data.synthetic import ACK, FIN, PSH, RST, SYN, PacketTable, generate, measure
 
 pytestmark = pytest.mark.unit
 

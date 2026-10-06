@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from graticule import evaluate, theme
-from graticule.models import train
+from nids import evaluate, theme
+from nids.models import train
 from tests.ui.harness import app_with_run, errors, fit_synthetic, fresh_caches, goto  # noqa: F401
 from ui.pages import measure
 
@@ -117,8 +117,8 @@ def test_a_run_without_repeat_counts_explains_why_there_is_no_estimate(
 
 def test_heavily_repeated_flows_missing_from_the_held_out_rows_bring_a_caution_and_the_range_table(
         fresh_caches: None, tmp_path: Path) -> None:
-    from graticule.data.prepare import DataRequest, prepare_dataset
-    from graticule.models.train import TrainRequest, build_training_data, train_all
+    from nids.data.prepare import DataRequest, prepare_dataset
+    from nids.models.train import TrainRequest, build_training_data, train_all
     from tests.unit.test_traffic import SEED, WEDNESDAY, _heavy_tail_file
 
     _heavy_tail_file(tmp_path)  # four attack flows recorded 150 times each; seed 0 holds none of them out

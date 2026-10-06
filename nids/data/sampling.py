@@ -14,7 +14,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from graticule.schema import ATTACK, BENIGN, NORMAL, WEB_ATTACK, is_normal_traffic
+from nids.schema import ATTACK, BENIGN, NORMAL, WEB_ATTACK, is_normal_traffic
 
 Mode = Literal["binary", "multiclass"]
 HARD_FLOOR = 10

@@ -1,6 +1,6 @@
 """Synthetic network flows: a small packet simulator feeding one shared flow meter.
 
-Graticule has to work before anyone points it at the CIC-IDS2017 files, so this module manufactures labelled flow
+NIDS has to work before anyone points it at the CIC-IDS2017 files, so this module manufactures labelled flow
 records with exactly the same 77 feature columns. It works in two stages, the way a capture pipeline does.
 
 1. Packet simulation. Every flow is given a traffic profile (an interactive web session, a DNS lookup, a port
@@ -41,7 +41,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from graticule import schema
+from nids import schema
 
 SYNTHETIC_CLASSES: tuple[str, ...] = ("BENIGN", "Flood", "Slow Drip", "Sweep", "Credential Guess", "Web Injection")
 

@@ -8,7 +8,7 @@ are measured on an otherwise idle process.
 
 A :class:`TrainingJob` runs the whole 02 Fit procedure (building the training matrices, then fitting each requested
 channel) either in a daemon thread (:meth:`TrainingJob.start`) or on the calling thread
-(:meth:`TrainingJob.run_inline`, used when ``GRATICULE_SYNC_TRAINING=1``). The worker never imports or calls the web
+(:meth:`TrainingJob.run_inline`, used when ``NIDS_SYNC_TRAINING=1``). The worker never imports or calls the web
 framework: it writes progress into a lock-protected object, and the UI polls :meth:`TrainingJob.snapshot`, which
 returns an immutable copy.
 
@@ -49,11 +49,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
-    from graticule.data.prepare import PreparedDataset
-    from graticule.models.train import TrainingRun, TrainRequest
+    from nids.data.prepare import PreparedDataset
+    from nids.models.train import TrainingRun, TrainRequest
 
 STAGE_KEY = "stage"
-SYNC_ENV = "GRATICULE_SYNC_TRAINING"
+SYNC_ENV = "NIDS_SYNC_TRAINING"
 JobState = Literal["queued", "running", "done", "failed", "cancelled"]
 #: Rough relative cost of each channel, used only to weight the overall progress bar.
 CHANNEL_COST: dict[str, float] = {"forest": 3.0, "xgboost": 3.0, "svm": 3.0, "mlp": 2.0, "logreg": 1.0}
@@ -126,7 +126,7 @@ def find_hooks(hook_id: str) -> tuple[ProgressSink | None, CancelToken | None]:
 _ROUTER_LOCK = threading.Lock()
 # The router keeps its per-thread recorder stacks as an attribute of itself, so a reloaded copy of this module finds
 # and reuses the router already installed instead of stacking a second one in front of it.
-_ROUTER_ATTR = "graticule_thread_recorders"
+_ROUTER_ATTR = "nids_thread_recorders"
 
 
 def _thread_recorders() -> dict[int, list[list[Any]]] | None:
@@ -378,13 +378,13 @@ def get_job(job_id: str) -> "TrainingJob | None":
 
 
 def sync_training_requested() -> bool:
-    """True when ``GRATICULE_SYNC_TRAINING`` is ``"1"`` (the UI then trains on its own thread, e.g. under AppTest)."""
+    """True when ``NIDS_SYNC_TRAINING`` is ``"1"`` (the UI then trains on its own thread, e.g. under AppTest)."""
     return os.environ.get(SYNC_ENV, "").strip() == "1"
 
 
 def _friendly_error(exc: BaseException) -> str:
     """Error text for the UI: the plain message for expected data problems, with the traceback otherwise."""
-    from graticule.data.sampling import SingleClassError
+    from nids.data.sampling import SingleClassError
 
     if isinstance(exc, SingleClassError):
         return str(exc)
@@ -402,7 +402,7 @@ class TrainingJob:
             turned away because another fit is running is dropped from the registry at once, so it keeps its
             sample only for as long as its caller holds the job (it can still be started later).
         request: the fit options.
-        result: the finished :class:`~graticule.models.train.TrainingRun`; after a cancel it holds the channels
+        result: the finished :class:`~nids.models.train.TrainingRun`; after a cancel it holds the channels
             finished before the cancel (the others are marked cancelled or skipped), or None when the cancel came
             before any channel ran. It is also kept when every channel failed. Whoever stores the run elsewhere
             calls :meth:`release_result`, so the finished jobs the registry remembers never keep old runs (models
@@ -461,14 +461,14 @@ class TrainingJob:
     def start(self) -> None:
         """Run the job in a daemon thread; raises :class:`JobBusyError` while another job is running."""
         self._claim()
-        self._thread = threading.Thread(target=self._execute, name=f"graticule-{self.job_id}", daemon=True)
+        self._thread = threading.Thread(target=self._execute, name=f"nids-{self.job_id}", daemon=True)
         self._thread.start()
 
     def run_inline(self) -> "TrainingRun":
         """Do the same work on the calling thread and return the run.
 
         Raises :class:`JobBusyError` while another job is running, and re-raises whatever ended the job (for
-        example :class:`~graticule.data.sampling.SingleClassError`) after recording it in ``error``. A run that
+        example :class:`~nids.data.sampling.SingleClassError`) after recording it in ``error``. A run that
         was cancelled from another thread is returned as it stands; a cancel before any channel ran raises
         :class:`TrainingCancelled`.
         """
@@ -529,7 +529,7 @@ class TrainingJob:
         """The job body: build the matrices, fit the channels and record the outcome (holds the run slot)."""
         import joblib
 
-        from graticule.models.train import build_training_data, train_all
+        from nids.models.train import build_training_data, train_all
 
         state: JobState = "failed"
         prepared = self.prepared

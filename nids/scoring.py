@@ -1,6 +1,6 @@
 """05 Assay: score a whole CSV of flows with one fitted channel, or with the consensus of every fitted channel.
 
-The file is read exactly as training files are (:func:`graticule.data.reader.read_flow_csv`: header spaces, a
+The file is read exactly as training files are (:func:`nids.data.reader.read_flow_csv`: header spaces, a
 byte-order mark, the repeated ``Fwd Header Length`` column, "Infinity" cells, the three text encodings and the
 Web Attack label stand-ins), except that the ``Label`` column is optional. Nothing is fitted here; the channels
 only predict.
@@ -19,7 +19,7 @@ Rules the scorer keeps:
   Attack; in multi-class mode a label must name one of the run's classes (after the Web Attack merge, when the run
   used it). A label made only of digits (such as 0 or 1) is not read as Attack: it names no kind of traffic.
   Labels the run never trained on are counted and left out of the accuracy, as are empty labels.
-* Alerts follow the rule every station shares (:func:`graticule.models.verdict.alert_flags`): an attack verdict
+* Alerts follow the rule every station shares (:func:`nids.models.verdict.alert_flags`): an attack verdict
   whose attack probability is at least the threshold.
 * Rows the run has seen are named. Each scored row is matched (by a 64-bit hash over the channels' columns) with
   the run's training and held-out rows, when the run holds them; the batch counts the rows that repeat a training
@@ -62,7 +62,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import confusion_matrix
 
-from graticule.data.clean import (
+from nids.data.clean import (
     BWD_BYTES,
     BWD_PACKETS,
     DURATION,
@@ -71,21 +71,21 @@ from graticule.data.clean import (
     apply_nonfinite_strategy,
     row_hashes,
 )
-from graticule.data.reader import (
+from nids.data.reader import (
     DataFileError,
     FileReadReport,
     clean_column_name,
     read_flow_csv,
     strip_byte_order_mark,
 )
-from graticule.data.sampling import apply_class_options
-from graticule.evaluate import quick_metrics
-from graticule.models.jobs import CancelToken, TrainingCancelled
-from graticule.models.train import TrainingRun, _tidy_proba
-from graticule.models.verdict import ALERT_RULE, alert_flags, combine
-from graticule.models.verdict import attack_probability as attack_probability_of
-from graticule.schema import ATTACK, FEATURE_SET, LABEL, NORMAL, is_normal_traffic
-from graticule.theme import CHANNEL_BY_KEY, GLYPH_ALERT, score_text, verdict_text
+from nids.data.sampling import apply_class_options
+from nids.evaluate import quick_metrics
+from nids.models.jobs import CancelToken, TrainingCancelled
+from nids.models.train import TrainingRun, _tidy_proba
+from nids.models.verdict import ALERT_RULE, alert_flags, combine
+from nids.models.verdict import attack_probability as attack_probability_of
+from nids.schema import ATTACK, FEATURE_SET, LABEL, NORMAL, is_normal_traffic
+from nids.theme import CHANNEL_BY_KEY, GLYPH_ALERT, score_text, verdict_text
 
 #: Channel value that scores with the consensus of every fitted channel.
 CONSENSUS = "consensus"
@@ -304,8 +304,8 @@ class ScoredBatch:
 
     @property
     def file_name(self) -> str:
-        """Download name of the scored CSV: ``graticule-assay-<run id>-<channel>.csv``."""
-        return f"graticule-assay-{self.run_id}-{self.channel}.csv"
+        """Download name of the scored CSV: ``nids-assay-<run id>-<channel>.csv``."""
+        return f"nids-assay-{self.run_id}-{self.channel}.csv"
 
     @property
     def values_as_written(self) -> bool:
@@ -940,10 +940,10 @@ def score_upload(
     attack probability from which an attack verdict raises an alert; ``chunk_rows`` rows are predicted at a time
     (and about that many are parsed per block). ``name`` names the file in messages (default: the path's or the
     object's name). ``progress`` receives (message, fraction done) and ``cancel`` is checked between chunks
-    (raising :class:`~graticule.models.jobs.TrainingCancelled`).
+    (raising :class:`~nids.models.jobs.TrainingCancelled`).
 
     Raises :class:`MissingColumnsError` when the file lacks a column the channels read (checked on the header
-    before the file is read), :class:`~graticule.data.reader.DataFileError` when it cannot be read as a flow CSV or
+    before the file is read), :class:`~nids.data.reader.DataFileError` when it cannot be read as a flow CSV or
     holds no rows, and ``ValueError`` for a channel the run has not fitted or a threshold outside 0..1. Nothing is
     ever fitted.
     """

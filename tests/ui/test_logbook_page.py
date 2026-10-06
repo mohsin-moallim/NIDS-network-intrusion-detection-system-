@@ -12,20 +12,23 @@ import time
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
+from streamlit.delta_generator import DeltaGenerator
 from streamlit.testing.v1 import AppTest
 
-import graticule.settings as settings_mod
-from graticule import persist
-from graticule.data.prepare import PreparedDataset
-from graticule.history import COLUMNS, RunHistory, run_summary
-from graticule.models import train
-from graticule.models.jobs import get_job
-from graticule.models.train import TrainingRun
-from graticule.models.zoo import MODEL_KEYS
+import nids.settings as settings_mod
+from nids import persist
+from nids.data.prepare import PreparedDataset
+from nids.history import COLUMNS, RunHistory, run_summary
+from nids.models import train
+from nids.models.jobs import get_job
+from nids.models.train import TrainingRun
+from nids.models.zoo import MODEL_KEYS
+from nids.report import exports
 from tests.ui.harness import (  # noqa: F401
     app_with_run,
     app_with_sample,
@@ -495,7 +498,7 @@ def test_a_fit_no_page_adopts_is_still_in_the_history(fresh_caches: None, monkey
     """A background fit records itself when it ends, even if its tab is gone before any page adopts it."""
     at = app_with_sample(drawn_sample(flows=2_000, budget=1_200), "fit").run()
     at.pills(key="fit_channels").set_value(QUICK)
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     at.button(key="fit_submit").click().run()
     job = get_job(at.session_state[state.JOB_ID])
     assert job is not None and job.wait(120)
@@ -523,8 +526,19 @@ def test_the_history_counts_every_run_and_the_csv_holds_them_all(fresh_caches: N
         return real_csv(frame)
 
     monkeypatch.setattr(logbook, "history_csv", spy)
+    names: dict[str, str] = {}
+    real_button = DeltaGenerator.download_button
+
+    def button_spy(self: DeltaGenerator, *args: Any, **kwargs: Any) -> bool:
+        names[str(kwargs.get("key"))] = str(kwargs.get("file_name"))
+        return real_button(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaGenerator, "download_button", button_spy)
     at.run()
     assert not errors(at), errors(at)
     assert len(_table(at, "Train rows")) == logbook.HISTORY_SHOWN
     assert "205 runs recorded" in _text(at) and "the CSV holds all 205" in _text(at)
     assert exported == [205]
+    # The download carries the same file name as 07 Record's run-history export.
+    assert names == {"lb_history_csv": "nids-run-history.csv"}
+    assert logbook.HISTORY_FILE_NAME == exports.export_file_name("run_history", None) == "nids-run-history.csv"

@@ -13,11 +13,11 @@ import pandas as pd
 import pytest
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
-from graticule import simulate
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.data.synthetic import SYNTHETIC_CLASSES
-from graticule.models.train import FIT_CALLS, TrainingRun, TrainRequest
-from graticule.simulate import ReplaySource, SimulationSession, SyntheticSource
+from nids import simulate
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.data.synthetic import SYNTHETIC_CLASSES
+from nids.models.train import FIT_CALLS, TrainingRun, TrainRequest
+from nids.simulate import ReplaySource, SimulationSession, SyntheticSource
 from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit

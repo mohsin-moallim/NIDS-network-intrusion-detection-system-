@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from graticule.history import RunHistory
-from graticule.models import jobs, train, zoo
-from graticule.settings import AppSettings, save_settings
+from nids.history import RunHistory
+from nids.models import jobs, train, zoo
+from nids.settings import AppSettings, save_settings
 from tests.helpers import make_rows, write_cic_csv
 from tests.ui.harness import (  # noqa: F401
     app_with_sample,
@@ -209,7 +209,7 @@ def test_the_last_fit_can_be_restored_in_a_new_session(fresh_caches: None) -> No
 def test_a_background_fit_shows_progress_then_its_readings(fresh_caches: None,
                                                           monkeypatch: pytest.MonkeyPatch) -> None:
     at = app_with_sample(drawn_sample(), "fit").run()
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     at.pills(key="fit_channels").set_value(["forest", "logreg"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)
@@ -228,7 +228,7 @@ def test_a_background_fit_shows_progress_then_its_readings(fresh_caches: None,
 def test_a_background_fit_is_not_lost_when_its_tab_is_refreshed(fresh_caches: None, job_spy: list[object],
                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
     at = app_with_sample(drawn_sample(), "fit").run()
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     at.pills(key="fit_channels").set_value(["logreg"])
     at.button(key="fit_submit").click().run()
     assert not errors(at), errors(at)

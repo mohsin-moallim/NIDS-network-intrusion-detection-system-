@@ -25,17 +25,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule import explain, persist, scoring, theme
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
-from graticule.data.reader import DataFileError, read_flow_csv
-from graticule.data.sampling import target_for_mode
-from graticule.evaluate import quick_metrics
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
-from graticule.models.verdict import alert_flags, attack_probability
-from graticule.report.pdf import _score
-from graticule.schema import FEATURES, LABEL, is_normal_traffic
-from graticule.scoring import ALERT, ATTACK_PROBABILITY, PREDICTED, score_upload
-from graticule.simulate import ReplaySource, SimulationSession
+from nids import explain, persist, scoring, theme
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from nids.data.reader import DataFileError, read_flow_csv
+from nids.data.sampling import target_for_mode
+from nids.evaluate import quick_metrics
+from nids.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from nids.models.verdict import alert_flags, attack_probability
+from nids.report.pdf import _score
+from nids.schema import FEATURES, LABEL, is_normal_traffic
+from nids.scoring import ALERT, ATTACK_PROBABILITY, PREDICTED, score_upload
+from nids.simulate import ReplaySource, SimulationSession
 from tests.helpers import make_rows, with_values, write_cic_csv
 
 pytestmark = pytest.mark.unit
@@ -282,7 +282,7 @@ def test_a_bundle_file_another_program_holds_is_reported(run: TrainingRun, tmp_p
 # Distinct flows and the traffic they stand for
 # --------------------------------------------------------------------------------------------------------------
 def test_each_row_knows_how_many_recorded_flows_it_stands_for(tmp_path: Path) -> None:
-    from graticule.evaluate import held_out_repeats, repeats_sentence
+    from nids.evaluate import held_out_repeats, repeats_sentence
 
     monday, tuesday = "Monday-WorkingHours.pcap_ISCX.csv", "Tuesday-WorkingHours.pcap_ISCX.csv"
     normal = make_rows({"BENIGN": 60})

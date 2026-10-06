@@ -14,10 +14,10 @@ import pytest
 from PIL import Image
 from streamlit.testing.v1 import AppTest
 
-from graticule import evaluate, viz
-from graticule.history import RunHistory
-from graticule.models import train
-from graticule.models.jobs import claim_slot, release_slot
+from nids import evaluate, viz
+from nids.history import RunHistory
+from nids.models import train
+from nids.models.jobs import claim_slot, release_slot
 from tests.ui.harness import app_with_run, errors, fit_synthetic, fresh_caches, goto, new_app  # noqa: F401
 from ui import state
 from ui.pages import record
@@ -38,7 +38,7 @@ def _captions(at: AppTest) -> str:
 
 
 def _blank_png(chart: Any, scale: float = 2, *, background: str | None = None) -> bytes:
-    """Stand-in for :func:`graticule.viz.to_png`: the chart is serialised (its spec is checked against the schema by
+    """Stand-in for :func:`nids.viz.to_png`: the chart is serialised (its spec is checked against the schema by
     ``tests/unit/test_report_pdf.py``), a blank PNG comes back."""
     chart.to_dict(validate=False)
     buffer = io.BytesIO()
@@ -133,7 +133,7 @@ def test_record_builds_the_pdf_and_offers_every_export(fresh_caches: None, quick
     assert {"rec_dl_cross_validation", "rec_dl_cross_validation_folds"} <= set(_downloads(at))
 
     # Built again in the background: the progress panel takes over until the task ends.
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     at.button(key="rec_build").click().run()
     assert not errors(at), errors(at)
     task = evaluate.get_task(at.session_state[record.PDF_TASK])

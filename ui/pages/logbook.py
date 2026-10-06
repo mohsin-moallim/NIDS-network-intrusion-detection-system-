@@ -1,6 +1,6 @@
 """Logbook station: saved channel sets (save, load with verification, delete) and the history of every fit.
 
-Saving writes the session's current run as a bundle (:mod:`graticule.persist`). CH3 is left out unless the viewer
+Saving writes the session's current run as a bundle (:mod:`nids.persist`). CH3 is left out unless the viewer
 ticks "Also save CH3 (RBF SVM)", a box drawn unticked for every new run: a kernel SVM is made of training rows, so
 saving it writes them (its support vectors) into the run's folder under saved_models. Loading checks the bundle's
 files, re-scores its probe vectors and, where the data allow, rebuilds the held-out rows, with a progress bar
@@ -20,9 +20,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from graticule import persist, theme
-from graticule.history import RunHistory
-from graticule.models.train import TrainingRun
+from nids import persist, theme
+from nids.history import RunHistory
+from nids.models.train import TrainingRun
+from nids.report import exports
 from ui import components, state
 
 # One message about the last Logbook action (kind, text), shown once.
@@ -37,6 +38,8 @@ PICK = "lb_pick"
 SAVE_SVM = "lb_save_svm"
 #: History lines shown in the table (the CSV holds every line).
 HISTORY_SHOWN = 200
+#: File name of the history download: the same name 07 Record gives its run-history export.
+HISTORY_FILE_NAME: str = exports.export_file_name("run_history", None)
 #: Seconds a hidden work folder in saved_models must stand unchanged before it is shown as left over (a save or a
 #: delete still running in another session keeps changing its folder).
 LEFTOVER_MIN_AGE = 30.0
@@ -513,7 +516,7 @@ def _history_section() -> None:
         everything = frame
     left, right, _ = st.columns([1, 1, 2])
     left.download_button("Download the history (CSV)", data=history_csv(everything),
-                         file_name="graticule_run_history.csv", mime="text/csv", key="lb_history_csv",
+                         file_name=HISTORY_FILE_NAME, mime="text/csv", key="lb_history_csv",
                          width="stretch")
     if right.button("Clear history", key="lb_clear", width="stretch"):
         st.session_state[CONFIRM_CLEAR] = True

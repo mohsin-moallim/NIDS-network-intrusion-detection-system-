@@ -8,10 +8,10 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from graticule import theme
-from graticule.models import zoo
-from graticule.models.transforms import FlowSanitizer
-from graticule.models.zoo import MODEL_KEYS, MODEL_SPECS, BuildContext, balanced_weights, build_estimator
+from nids import theme
+from nids.models import zoo
+from nids.models.transforms import FlowSanitizer
+from nids.models.zoo import MODEL_KEYS, MODEL_SPECS, BuildContext, balanced_weights, build_estimator
 
 pytestmark = pytest.mark.unit
 

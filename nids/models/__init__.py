@@ -1,4 +1,4 @@
-"""Models for Graticule: the five channels, how they are trained, and how their readings are combined.
+"""Models for NIDS: the five channels, how they are trained, and how their readings are combined.
 
 Modules:
 

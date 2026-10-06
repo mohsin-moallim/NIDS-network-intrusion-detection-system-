@@ -9,7 +9,7 @@ from sklearn.base import clone
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
-from graticule.models.transforms import SIGNED_LOG, FlowSanitizer, make_signed_log, signed_log1p
+from nids.models.transforms import SIGNED_LOG, FlowSanitizer, make_signed_log, signed_log1p
 
 pytestmark = pytest.mark.unit
 

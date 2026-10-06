@@ -12,13 +12,13 @@ import time
 
 import streamlit as st
 
-from graticule import theme, viz
-from graticule.data import prepare
-from graticule.data.clean import CONFLICT_POLICIES
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.data.reader import DataFileError
-from graticule.schema import EXPECTED_BY_NAME, is_normal_traffic
-from graticule.settings import NONFINITE_STRATEGIES, AppSettings, DataDirResolution, resolve_data_dir
+from nids import theme, viz
+from nids.data import prepare
+from nids.data.clean import CONFLICT_POLICIES
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.data.reader import DataFileError
+from nids.schema import EXPECTED_BY_NAME, is_normal_traffic
+from nids.settings import NONFINITE_STRATEGIES, AppSettings, DataDirResolution, resolve_data_dir
 from ui import components, data_cache, state
 
 SOURCE_LABELS = {"cicids": "CIC-IDS2017 files", "synthetic": "Synthetic flows"}

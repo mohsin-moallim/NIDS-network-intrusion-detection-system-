@@ -2,11 +2,11 @@
 
 Three process-wide caches (``st.cache_resource``: one shared object, no copy per session):
 
-* the file as read (:func:`graticule.data.prepare.read_source_file`), which does not depend on any option, so a
+* the file as read (:func:`nids.data.prepare.read_source_file`), which does not depend on any option, so a
   file is read once however often the strategy or the budget changes;
-* the hash of every row (:func:`graticule.data.prepare.hash_rows`), the slow part of the per-file stage, which no
+* the hash of every row (:func:`nids.data.prepare.hash_rows`), the slow part of the per-file stage, which no
   strategy changes, so switching strategy does not hash a file again (16 bytes per row);
-* the per-file stage for one bad-value strategy (:func:`graticule.data.prepare.stage_rows`): row positions and
+* the per-file stage for one bad-value strategy (:func:`nids.data.prepare.stage_rows`): row positions and
   hashes only, a few bytes per row, so every strategy of every file fits.
 
 Keys include the file's size and modification time and the reader/stage versions, so an edited file or new code is
@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from graticule.data.prepare import (
+from nids.data.prepare import (
     STAGE_VERSION,
     FileReader,
     FileStage,
@@ -31,7 +31,7 @@ from graticule.data.prepare import (
     read_source_file,
     stage_rows,
 )
-from graticule.data.reader import READER_VERSION, FileReadReport
+from nids.data.reader import READER_VERSION, FileReadReport
 
 # Room for the eight published files plus a few other CSVs, so drawing from all of them never evicts one that
 # the same draw needs again; three strategies per file for the small stage entries.
@@ -69,13 +69,13 @@ def _key(path: Path) -> tuple[str, int, int]:
 
 
 def cached_reader(path: Path) -> tuple[pd.DataFrame, FileReadReport]:
-    """Drop-in replacement for :func:`graticule.data.prepare.read_source_file` that goes through the cache."""
+    """Drop-in replacement for :func:`nids.data.prepare.read_source_file` that goes through the cache."""
     path_str, size, mtime_ns = _key(path)
     return cached_read(path_str, size, mtime_ns, READER_VERSION)
 
 
 def cached_stager(path: Path, frame: pd.DataFrame, read_report: FileReadReport, strategy: str) -> FileStage:
-    """Drop-in :data:`graticule.data.prepare.FileStager` that goes through the cache."""
+    """Drop-in :data:`nids.data.prepare.FileStager` that goes through the cache."""
     path_str, size, mtime_ns = _key(path)
     return cached_stage(path_str, size, mtime_ns, strategy, STAGE_VERSION, frame, read_report)
 

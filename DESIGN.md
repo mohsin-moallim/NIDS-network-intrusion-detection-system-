@@ -1,4 +1,4 @@
-# Graticule design record
+# NIDS design record
 
 This file records the design decisions made or approved by the project owner (mohsin-moallim), each with the reason for it.
 New entries are added as the build moves through its phases. Dates are ISO (YYYY-MM-DD).
@@ -6,11 +6,12 @@ New entries are added as the build moves through its phases. Dates are ISO (YYYY
 ## Decisions approved on 2026-10-01 (initial plan)
 
 ### Name and identity
-- **Name: Graticule.** Tagline: *"A measuring bench for training, testing and comparing network-intrusion classifiers."*
-  A graticule is the ruled grid on an oscilloscope screen or survey map that every trace is read against. The name
-  frames the app as an instrument: every model is a measuring *channel* and every result is a *reading* shown with its
-  sample size. That pushes the interface towards honest reporting (balanced accuracy and test-set class counts sit next
-  to every score). It was chosen over two alternatives, *Inkling* (analyst's casebook) and *Pratique* (harbour clearance).
+- **Name: NIDS (Network Intrusion Detection System).** Tagline: *"A measuring bench for training, testing and comparing
+  network-intrusion classifiers."* The owner set this name on 2026-10-05 (see the entry at the end of this file).
+- **Identity: a measuring bench.** Three identities were proposed (an instrument bench, an analyst's casebook and a
+  harbour-clearance theme); the owner chose the instrument bench. It frames the app as an instrument: every model is a
+  measuring *channel* and every result is a *reading* shown with its sample size. That pushes the interface towards
+  honest reporting (balanced accuracy and test-set class counts sit next to every score).
 - **Palette.** Graphite dark mode (`#12171C`) and paper light mode (`#F3F1EA`), one enamel-green control colour, a brass
   secondary, and three reserved semantic colours: blue = normal, vermilion = attack, signal yellow/amber = alert.
   It deliberately avoids the black + neon cyan + purple look. Every text pair passes WCAG contrast (body ≥ 7:1,
@@ -42,7 +43,7 @@ New entries are added as the build moves through its phases. Dates are ISO (YYYY
 - **Package `xgboost`** (not the smaller `xgboost-cpu`), for recognisability.
 
 ### Architecture
-- Core library `graticule/` holds all data and ML logic and never imports Streamlit (enforced by a test); the UI lives in
+- Core library `nids/` holds all data and ML logic and never imports Streamlit (enforced by a test); the UI lives in
   `app.py` and `ui/`. This keeps the logic testable without the web framework.
 - **No retraining on unrelated interaction.** Settings live in forms, training starts only from the Fit button, runs in a
   background thread that never touches the UI, and pages only read stored results. Finished runs are also kept in a
@@ -77,7 +78,7 @@ New entries are added as the build moves through its phases. Dates are ISO (YYYY
 
 ### Process
 - Built phase by phase; each phase ends with the app running, `pytest` passing, this file updated and one commit.
-- Commits use the owner's git identity. Published by the owner to <https://github.com/mohsin-moallim/graticule>.
+- Commits use the owner's git identity. Published by the owner to <https://github.com/mohsin-moallim/NIDS-network-intrusion-detection-system->.
 
 ## Phase 0 — environment and skeleton (2026-10-01)
 Measured on the target laptop (i5-8365U, 16 GB, Windows 11, Python 3.13):
@@ -304,3 +305,16 @@ Built by four implementers in parallel, integrated, reviewed through three lense
   checks (a saved set reloaded and the history read in a fresh process) stay in the default run.
 - **README screenshots** were captured from a separate app instance with temporary settings, a neutral data-folder name
   and no dataset rows (04 Probe shows a typical flow; 05 Assay is cropped above the scored rows).
+
+## Owner decision — the project is named NIDS (2026-10-05)
+- **Decision (owner):** the project and its GitHub repository are named **NIDS** — *Network Intrusion Detection System*
+  (`mohsin-moallim/NIDS-network-intrusion-detection-system-`). The name is used everywhere: app title, PDF record,
+  README, the Python package (`nids`), environment variables (`NIDS_DATA_DIR`, `NIDS_SYNC_TRAINING`, `NIDS_TEST_PROFILE`),
+  the icon file and download names.
+- **Why:** the owner wants the project to carry a plain, descriptive name that says what it is.
+- **What stays:** the measuring-bench identity — stations 01 Sample … 07 Record, Logbook and Bench, channels CH1–CH5,
+  "readings", the palette, fonts and icon — and the tagline.
+- **Saved sets:** a set saved before the rename was migrated in place so it still loads and verifies; sets from older
+  builds that cannot be read are refused with a plain message and can be fitted and saved again.
+- **Run history:** the logbook stores each saved run's folder path, so those paths were updated to the renamed project
+  folder in the same way; the logbook's history download is named `nids-run-history.csv`, like the 07 Record export.

@@ -2,8 +2,8 @@
 
 A CIC-IDS2017 run replays its real held-out flows with their true labels (never generated ones), so the live
 readings measure the channel exactly as 03 Measure does, one flow at a time. A run fitted on synthetic data streams
-fresh generator flows, or replays its held-out rows. The engine is :mod:`graticule.simulate`; this page only keeps
-one :class:`~graticule.simulate.SimulationSession` per browser session (under :data:`SESSION_KEY`) and draws it.
+fresh generator flows, or replays its held-out rows. The engine is :mod:`nids.simulate`; this page only keeps
+one :class:`~nids.simulate.SimulationSession` per browser session (under :data:`SESSION_KEY`) and draws it.
 
 Settings change nothing until they are used: the first Start or Step once builds the stream from them, and later
 changes wait for Apply (a new channel, stream, attack share, mix or seed starts a fresh stream; pace, interval and
@@ -12,7 +12,7 @@ interval, stepping the session by one tick each time; the rest of the page does 
 reading, Reset clears the stream. Nothing here ever fits a model.
 
 07 Record reads the stream through :func:`current_session` (its log is
-:meth:`~graticule.simulate.SimulationSession.log_frame`).
+:meth:`~nids.simulate.SimulationSession.log_frame`).
 """
 
 from __future__ import annotations
@@ -27,11 +27,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from graticule import simulate, theme, viz
-from graticule.models.jobs import busy_message, claim_slot, release_slot, slot_holder
-from graticule.models.train import TrainingRun
-from graticule.simulate import FlowEvent, SimulationSession, SourceKind
-from graticule.theme import Mode
+from nids import simulate, theme, viz
+from nids.models.jobs import busy_message, claim_slot, release_slot, slot_holder
+from nids.models.train import TrainingRun
+from nids.simulate import FlowEvent, SimulationSession, SourceKind
+from nids.theme import Mode
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 from ui.training_ui import channel_label

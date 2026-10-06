@@ -2,17 +2,17 @@
 
 Order of work (each step looks only at what it is allowed to see, so nothing leaks from the test rows):
 
-1. Target for the mode (:func:`graticule.data.sampling.target_for_mode`): binary maps BENIGN to "Normal" and every
+1. Target for the mode (:func:`nids.data.sampling.target_for_mode`): binary maps BENIGN to "Normal" and every
    other label to "Attack"; multi-class keeps the classes and leaves out those below the minimum class count. In both
    modes a class below the hard floor of 10 rows is left out.
-2. Feature columns (:func:`graticule.features.select_features`), with degenerate columns detected on the rows that
+2. Feature columns (:func:`nids.features.select_features`), with degenerate columns detected on the rows that
    take part.
 3. Model-space de-duplication: rows identical over the chosen columns and the target are reduced to one, and rows
    identical over the chosen columns but with different targets (conflicts) are counted and handled by the conflict
    policy. Dropping columns (the port, say) can make distinct flows identical, so this is done again here even
    though 01 Sample removed exact duplicates over all 77 features. Classes that fall below their minimum because
    of it are left out and reported.
-4. Stratified split (:func:`graticule.data.sampling.stratified_split`).
+4. Stratified split (:func:`nids.data.sampling.stratified_split`).
 5. Top-K only: the ranking is computed on the TRAINING rows alone (de-duplication in step 3 used every candidate
    column), and the report counts test rows whose K-column vector also occurs among the training rows.
 
@@ -26,7 +26,7 @@ ranking), MLP epochs, logistic-regression iterations and batches of test rows be
 effect within one such step. The steps that cannot be interrupted are the kernel SVM's own fit and the matrix
 copies.
 
-Warnings. Each channel records the warnings raised on its own thread (:func:`graticule.models.jobs.thread_warnings`,
+Warnings. Each channel records the warnings raised on its own thread (:func:`nids.models.jobs.thread_warnings`,
 which leaves the process's warning state alone) and keeps them as notes, apart from a few that say nothing about
 the readings. Whether a model stopped at its iteration limit is read from the fitted model, so that note never
 depends on warning filters.
@@ -53,8 +53,8 @@ from sklearn.frozen import FrozenEstimator
 from sklearn.pipeline import Pipeline
 from xgboost.callback import TrainingCallback
 
-from graticule.data import sampling
-from graticule.data.clean import (
+from nids.data import sampling
+from nids.data.clean import (
     conflict_keep_mask,
     conflict_mask,
     copies_per_kept_row,
@@ -63,10 +63,10 @@ from graticule.data.clean import (
     hashes_with_labels,
     row_hashes,
 )
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.data.sampling import HARD_FLOOR, SingleClassError
-from graticule.evaluate import quick_metrics
-from graticule.features import (
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.data.sampling import HARD_FLOOR, SingleClassError
+from nids.evaluate import quick_metrics
+from nids.features import (
     DEFAULT_K,
     FEATURE_MODES,
     RANK_ROUNDS,
@@ -75,8 +75,8 @@ from graticule.features import (
     rank_features,
     select_features,
 )
-from graticule.models import zoo
-from graticule.models.jobs import (
+from nids.models import zoo
+from nids.models.jobs import (
     STAGE_KEY,
     CancelToken,
     ProgressSink,
@@ -86,13 +86,13 @@ from graticule.models.jobs import (
     release_hooks,
     thread_warnings,
 )
-from graticule.models.zoo import MODEL_KEYS, BuildContext, ObservableMLP, Profile, WholeSliceSplit
-from graticule.schema import DESTINATION_PORT, FEATURES, LABEL
+from nids.models.zoo import MODEL_KEYS, BuildContext, ObservableMLP, Profile, WholeSliceSplit
+from nids.schema import DESTINATION_PORT, FEATURES, LABEL
 
 Mode = Literal["binary", "multiclass"]
 ConflictPolicy = Literal["keep", "majority", "drop"]
 #: ``"not_saved"`` marks a channel of a run loaded from disk that was fitted but left out of its saved set (CH3,
-#: unless it was saved by choice; see :data:`graticule.persist.UNSAVED_CHANNELS`).
+#: unless it was saved by choice; see :data:`nids.persist.UNSAVED_CHANNELS`).
 ChannelStatus = Literal["ok", "failed", "cancelled", "skipped", "not_saved"]
 RunOrigin = Literal["fitted", "loaded"]
 
@@ -101,7 +101,7 @@ RunOrigin = Literal["fitted", "loaded"]
 FIT_CALLS: Counter[str] = Counter()
 _FIT_CALLS_LOCK = threading.Lock()
 #: The :data:`FIT_CALLS` key of the small XGBoost model that ranks features for Top-K
-#: (:func:`graticule.features.rank_features`, fitted through :func:`fit_model` like every other model).
+#: (:func:`nids.features.rank_features`, fitted through :func:`fit_model` like every other model).
 RANKING_KEY = "topk_ranking"
 
 #: Training rows kept for explanations (rare-aware draw).
@@ -181,7 +181,7 @@ class TrainRequest:
         object.__setattr__(self, "channels", ordered)
 
     def build_context(self, n_classes: int) -> BuildContext:
-        """The :class:`~graticule.models.zoo.BuildContext` for a target with ``n_classes`` classes."""
+        """The :class:`~nids.models.zoo.BuildContext` for a target with ``n_classes`` classes."""
         return BuildContext(n_classes=int(n_classes), seed=int(self.seed), profile=self.profile,
                             svm_cap=int(self.svm_cap))
 
@@ -238,7 +238,7 @@ class ChannelResult:
     ``estimator`` is the fitted model (a pipeline, or for the SVM a calibrated wrapper around the fitted pipeline);
     ``proba`` holds float32 class probabilities on the test rows (n_test x K, rows summing to 1) and ``y_pred`` their
     argmax. ``rows_used`` is the number of training rows the model was fitted on, ``rows_available`` the size of
-    the training split. ``extra`` holds plain values: ``metrics`` (see :func:`graticule.evaluate.quick_metrics`),
+    the training split. ``extra`` holds plain values: ``metrics`` (see :func:`nids.evaluate.quick_metrics`),
     ``flows_per_second`` and model details such as ``best_iteration``, ``n_trees`` or ``svm_rows_used``.
     """
 
@@ -269,7 +269,7 @@ class TrainingRun:
     matrices (including any Top-K ranking) is ``data.reports["seconds"]``, and :attr:`total_seconds` adds both.
 
     ``origin`` is ``"fitted"`` for a run fitted in this process and ``"loaded"`` for one restored from a saved
-    bundle (:func:`graticule.persist.restore_run`); ``bundle_path`` is the folder the run was saved to or loaded
+    bundle (:func:`nids.persist.restore_run`); ``bundle_path`` is the folder the run was saved to or loaded
     from (None while unsaved). A loaded run may come without its held-out rows (see :attr:`has_test_rows`).
     """
 
@@ -485,7 +485,7 @@ def sampling_shares(prepared: Any) -> dict[str, Any] | None:
 
     ``before`` and ``after`` map each class the sampler drew from to its distinct rows available before the draw
     and those it kept (the sampler's own report); ``merge_web_attacks`` says whether the three Web Attack types were
-    drawn as one class. :func:`graticule.evaluate.traffic_weights` reads them to scale each held-out row up to the
+    drawn as one class. :func:`nids.evaluate.traffic_weights` reads them to scale each held-out row up to the
     recorded flows of its class. None when ``prepared`` carries no sampling report.
     """
     report = getattr(prepared, "sampling", None)
@@ -513,7 +513,7 @@ def heavy_flow_report(
 ) -> dict[str, Any]:
     """Which heavily repeated flows of the cleaned files the held-out rows hold, per class of the target.
 
-    ``profile`` is the 01 Sample :func:`~graticule.data.prepare.repeat_profile`. The other arrays describe the rows
+    ``profile`` is the 01 Sample :func:`~nids.data.prepare.repeat_profile`. The other arrays describe the rows
     of the target before the 02 Fit de-duplication, aligned: their 01 Sample class, target class, own copy counts
     (``PreparedDataset.copies``), model-space hashes and sample positions; ``train_rows``/``test_rows`` are the
     sample positions of the split. A flow is heavy for target class T when the files recorded it at least
@@ -572,7 +572,7 @@ def build_training_data(
 ) -> TrainingData:
     """Build the training and test matrices for ``request`` (see the module notes for the order of work).
 
-    Raises :class:`~graticule.data.sampling.SingleClassError` with a message for the user when fewer than two
+    Raises :class:`~nids.data.sampling.SingleClassError` with a message for the user when fewer than two
     classes remain (for example BENIGN-only data in binary mode). ``progress`` receives stage updates under
     ``STAGE_KEY``; ``cancel`` is checked between steps.
 
@@ -833,7 +833,7 @@ class _IterationReporter:
 
 
 def _epoch_observer(hook_id: str, key: str, limit: int) -> Callable[[Any], None]:
-    """The per-epoch hook for :class:`~graticule.models.zoo.ObservableMLP`: a cancel check, then progress."""
+    """The per-epoch hook for :class:`~nids.models.zoo.ObservableMLP`: a cancel check, then progress."""
     def observe(model: Any) -> None:
         progress, cancel = find_hooks(hook_id)
         if cancel is not None and cancel.cancelled:
@@ -913,7 +913,7 @@ def _fit_svm(estimator: Pipeline, X: np.ndarray, y: np.ndarray, w: np.ndarray, c
 
     The calibration rows (at most 5,000) are drawn first, rare-aware (:func:`_calibration_take`: every class gives
     at least 20 rows, or half of its rows when it has fewer than 40), and the SVM draws its rows from the rest. The
-    calibration uses one split over all of its rows (:class:`~graticule.models.zoo.WholeSliceSplit`).
+    calibration uses one split over all of its rows (:class:`~nids.models.zoo.WholeSliceSplit`).
     """
     n = len(y)
     cap = ctx.effective_svm_cap
@@ -1011,7 +1011,7 @@ def fit_model(
     other training rows drawn rare-aware (see :func:`_calibration_take`); the MLP and logistic regression report
     every epoch or iteration. When the SVM sees a subset, balanced weights are recomputed on that
     subset (unit weights stay unit). ``info`` holds ``rows_used``, ``notes`` (including the warnings raised on this
-    thread during the fit, see :func:`graticule.models.jobs.thread_warnings`) and ``extra``.
+    thread during the fit, see :func:`nids.models.jobs.thread_warnings`) and ``extra``.
 
     Raises :class:`TrainingCancelled` when ``cancel`` fires before the model is complete (checked before the fit,
     between forest chunks, boosting rounds, MLP epochs and L-BFGS iterations, and between the SVM's fit and its

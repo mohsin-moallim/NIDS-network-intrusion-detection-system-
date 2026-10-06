@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import graticule.settings as s
-from graticule.schema import EXPECTED_FILES
+import nids.settings as s
+from nids.schema import EXPECTED_FILES
 
 pytestmark = pytest.mark.unit
 

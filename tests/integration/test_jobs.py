@@ -16,11 +16,11 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
-from graticule.data.sampling import SingleClassError
-from graticule.models import train as train_mod
-from graticule.models import zoo
-from graticule.models.jobs import (
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from nids.data.sampling import SingleClassError
+from nids.models import train as train_mod
+from nids.models import zoo
+from nids.models.jobs import (
     JobBusyError,
     JobSnapshot,
     TrainingCancelled,
@@ -32,8 +32,8 @@ from graticule.models.jobs import (
     sync_training_requested,
     thread_warnings,
 )
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.schema import BENIGN, LABEL
+from nids.models.train import TrainingRun, TrainRequest
+from nids.schema import BENIGN, LABEL
 from xgboost import callback as xgb_callback
 
 pytestmark = pytest.mark.integration
@@ -310,11 +310,11 @@ def test_inline_cancel_before_any_channel_raises(prepared: PreparedDataset) -> N
 
 
 def test_sync_training_flag_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "1")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "1")
     assert sync_training_requested()
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     assert not sync_training_requested()
-    monkeypatch.delenv("GRATICULE_SYNC_TRAINING")
+    monkeypatch.delenv("NIDS_SYNC_TRAINING")
     assert not sync_training_requested()
     assert get_job("job-unknown") is None
 

@@ -34,7 +34,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from graticule.data.clean import (
+from nids.data.clean import (
     CONFLICT_POLICIES,
     ConflictReport,
     DegenerateReport,
@@ -49,8 +49,8 @@ from graticule.data.clean import (
     hashes_with_labels,
     row_hashes,
 )
-from graticule.data.reader import READER_VERSION, DataFileError, FileReadReport, normalize_labels, read_flow_csv
-from graticule.data.sampling import (
+from nids.data.reader import READER_VERSION, DataFileError, FileReadReport, normalize_labels, read_flow_csv
+from nids.data.sampling import (
     SamplingReport,
     SingleClassError,
     apply_class_options,
@@ -58,8 +58,8 @@ from graticule.data.sampling import (
     sample_positions,
     target_for_mode,
 )
-from graticule.schema import EXPECTED_BY_NAME, EXPECTED_FILES, FEATURES, LABEL, is_normal_traffic
-from graticule.settings import NONFINITE_STRATEGIES
+from nids.schema import EXPECTED_BY_NAME, EXPECTED_FILES, FEATURES, LABEL, is_normal_traffic
+from nids.settings import NONFINITE_STRATEGIES
 
 # Part of the UI cache key for per-file results: bump when the per-file stage changes.
 STAGE_VERSION = f"{READER_VERSION}.2"
@@ -179,9 +179,9 @@ FileStager = Callable[[Path, pd.DataFrame, FileReadReport, str], FileStage]
 def read_source_file(path: Path) -> tuple[pd.DataFrame, FileReadReport]:
     """Read one file to sample from: every one of the 77 features and a ``Label`` column are required.
 
-    The frame is what :func:`~graticule.data.reader.read_flow_csv` returns (index = 0-based data-row position in
+    The frame is what :func:`~nids.data.reader.read_flow_csv` returns (index = 0-based data-row position in
     the file). It does not depend on the bad-value strategy, so a cache can share it between draws; treat it as
-    read-only. Raises :class:`~graticule.data.reader.DataFileError` when features are missing.
+    read-only. Raises :class:`~nids.data.reader.DataFileError` when features are missing.
     """
     frame, report = read_flow_csv(Path(path), require_label=True)
     if report.missing_features:
@@ -277,7 +277,7 @@ def _stage_without_cache(path: Path, frame: pd.DataFrame, read_report: FileReadR
 def _load_generator() -> Callable[..., pd.DataFrame]:
     """The synthetic flow generator (imported lazily so this module works before the generator exists)."""
     try:
-        module = importlib.import_module("graticule.data.synthetic")
+        module = importlib.import_module("nids.data.synthetic")
     except ImportError as exc:
         raise DataFileError("The synthetic flow generator is not available in this build.") from exc
     return module.generate
@@ -420,7 +420,7 @@ class PeakMemoryWatch:
                 return self
             self._sampled = current
             self.start_mb = current / 2**20
-            self._thread = threading.Thread(target=self._poll, name="graticule-memory-watch", daemon=True)
+            self._thread = threading.Thread(target=self._poll, name="nids-memory-watch", daemon=True)
             self._thread.start()
         return self
 
@@ -775,7 +775,7 @@ def prepare_dataset(
 
     ``read_file`` replaces :func:`read_source_file` and ``stage_file`` replaces :func:`stage_rows` (the UI passes
     cached versions; frames they return are shared and never modified here). ``progress`` receives (message,
-    fraction done) updates. Raises :class:`~graticule.data.reader.DataFileError` with a readable message when a
+    fraction done) updates. Raises :class:`~nids.data.reader.DataFileError` with a readable message when a
     folder or file is missing or unusable, or when no row survives cleaning.
     """
     notify: ProgressFn = progress or (lambda message, fraction: None)

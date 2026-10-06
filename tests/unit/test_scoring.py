@@ -19,17 +19,17 @@ import pandas as pd
 import pytest
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix
 
-from graticule import persist, scoring
-from graticule.data.clean import BYTES_PER_S, PACKETS_PER_S
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.data.reader import DataFileError, read_flow_csv
-from graticule.models import train
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.models.verdict import alert_flags
-from graticule.report import exports
-from graticule.report.pdf import ReportExtras
-from graticule.schema import FEATURES, LABEL
-from graticule.scoring import (
+from nids import persist, scoring
+from nids.data.clean import BYTES_PER_S, PACKETS_PER_S
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.data.reader import DataFileError, read_flow_csv
+from nids.models import train
+from nids.models.train import TrainingRun, TrainRequest
+from nids.models.verdict import alert_flags
+from nids.report import exports
+from nids.report.pdf import ReportExtras
+from nids.schema import FEATURES, LABEL
+from nids.scoring import (
     AGREEMENT,
     ALERT,
     ATTACK_PROBABILITY,
@@ -440,7 +440,7 @@ def test_uploads_as_bytes_or_file_objects_and_csv_export(prepared: PreparedDatas
     assert len(back) == 30 and list(back.columns[-len(from_object.result_columns):]) == from_object.result_columns
     assert back[PREDICTED].tolist() == from_object.frame[PREDICTED].tolist()
     assert back[ALERT].dtype == bool  # written true/false, read back as flags
-    assert from_object.file_name == f"graticule-assay-{run.run_id}-svm.csv"
+    assert from_object.file_name == f"nids-assay-{run.run_id}-svm.csv"
     preview = from_object.preview(12)
     assert len(preview) == 12 and preview.columns[0] == scoring.VERDICT
     assert all(v.endswith(("○ Normal", "◆ Attack")) for v in preview[scoring.VERDICT])

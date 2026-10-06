@@ -15,13 +15,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule import evaluate
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.evaluate import ChannelEvaluation, EvaluationTask
-from graticule.models import train
-from graticule.models.jobs import CancelToken, TrainingCancelled
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.models.zoo import MODEL_KEYS
+from nids import evaluate
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.evaluate import ChannelEvaluation, EvaluationTask
+from nids.models import train
+from nids.models.jobs import CancelToken, TrainingCancelled
+from nids.models.train import TrainingRun, TrainRequest
+from nids.models.zoo import MODEL_KEYS
 from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
@@ -405,7 +405,7 @@ def test_tasks_record_their_outcome_inline_and_in_the_background() -> None:
 def test_exclusive_tasks_share_the_work_slot_with_fits() -> None:
     """Cross-validation and permutation importance run as exclusive tasks: one at a time, never alongside a fit
     (which takes the same slot), and the slot is given back however the task ends."""
-    from graticule.models.jobs import JobBusyError, slot_holder
+    from nids.models.jobs import JobBusyError, slot_holder
 
     started, release = threading.Event(), threading.Event()
 
@@ -442,7 +442,7 @@ def test_cv_notes_say_when_readings_are_not_comparable(runs: dict[str, TrainingR
 
 
 def test_multiclass_leaderboard_shows_macro_and_weighted_readings(runs: dict[str, TrainingRun]) -> None:
-    from graticule import viz
+    from nids import viz
 
     run = runs["multiclass"]
     board = evaluate.leaderboard(evaluate.evaluate_run(run), run)

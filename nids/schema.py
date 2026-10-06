@@ -1,6 +1,6 @@
 """Column names, label vocabulary and file catalogue for CIC-IDS2017 flow records.
 
-The raw CSV headers carry stray leading spaces and one repeated column; everything in Graticule works with the
+The raw CSV headers carry stray leading spaces and one repeated column; everything in NIDS works with the
 cleaned names defined here. The synthetic generator emits exactly the same columns, so the rest of the pipeline
 never needs to know where a flow came from.
 """
@@ -227,7 +227,7 @@ def is_normal_traffic(label: str) -> bool:
     """True when ``label`` names normal traffic under either naming: ``BENIGN`` (the dataset's label) or ``Normal``
     (the binary target's name, also used by some other flow files), in any letter case.
 
-    Every part of Graticule that asks "is this class normal traffic?" uses this one test, so a file labelled
+    Every part of NIDS that asks "is this class normal traffic?" uses this one test, so a file labelled
     "Normal" is read the same way when it is fitted, scored, streamed or explained.
     """
     return str(label).strip().upper() in (BENIGN, NORMAL.upper())

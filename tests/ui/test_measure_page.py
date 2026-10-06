@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from graticule import evaluate
-from graticule.models import train
-from graticule.models.jobs import claim_slot, release_slot
+from nids import evaluate
+from nids.models import train
+from nids.models.jobs import claim_slot, release_slot
 from tests.ui.harness import app_with_run, errors, fit_synthetic, fresh_caches, goto, new_app  # noqa: F401
 from ui import state
 from ui.pages import measure
@@ -196,7 +196,7 @@ def test_multiclass_run_shows_per_class_curves(fresh_caches: None, monkeypatch: 
 
     # A measurement started in the background: the progress panel shows, and the result is read once it ends.
     at.selectbox(key=measure.run_key("ms_detail_channel", run)).set_value("logreg").run()
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     at.button(key="ms_perm_run").click().run()
     assert not errors(at), errors(at)
     task = evaluate.get_task(at.session_state[measure.PERM_TASK])
@@ -210,7 +210,7 @@ def test_multiclass_run_shows_per_class_curves(fresh_caches: None, monkeypatch: 
     assert "logreg" in evaluate.stored_permutations(run) and _fits() == fits
 
     # While a fit runs anywhere in the app, neither measurement can start: one fit or measurement at a time.
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "1")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "1")
     assert claim_slot("a fit")
     try:
         at.run()

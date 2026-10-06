@@ -1,9 +1,9 @@
 """Streamlit side of a fit: starting the job, the live progress panel and the readings of a finished run.
 
-The training itself lives in :mod:`graticule.models` and never touches Streamlit. This module only
+The training itself lives in :mod:`nids.models` and never touches Streamlit. This module only
 
-* starts a :class:`~graticule.models.jobs.TrainingJob` from the Fit button's callback (in a background thread, or
-  on the calling thread when ``GRATICULE_SYNC_TRAINING=1``, which the headless UI tests set), so the page that
+* starts a :class:`~nids.models.jobs.TrainingJob` from the Fit button's callback (in a background thread, or
+  on the calling thread when ``NIDS_SYNC_TRAINING=1``, which the headless UI tests set), so the page that
   follows already shows the running fit;
 * polls the job once a second from a fragment, so only the progress panel redraws while channels are fitted;
 * draws the readings of a stored run. Readings are derived from the predictions stored in the run (never by
@@ -13,7 +13,7 @@ The training itself lives in :mod:`graticule.models` and never touches Streamlit
 Every job also writes its run to the run history from its own thread as soon as the run exists
 (:func:`record_finished_run`), so a fit that no page ever adopts (its tab was closed) is still recorded.
 
-Test hook: when the environment variable ``GRATICULE_TEST_PROFILE`` is ``"1"`` every fit uses the shrunken
+Test hook: when the environment variable ``NIDS_TEST_PROFILE`` is ``"1"`` every fit uses the shrunken
 ``profile="test"`` models (few trees, rounds and iterations), which keeps the UI tests fast. It is never set in
 normal use.
 """
@@ -31,19 +31,19 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from graticule import theme
-from graticule.data.prepare import PreparedDataset
-from graticule.data.sampling import SingleClassError
-from graticule.evaluate import held_out_repeats, quick_metrics, repeats_sentence
-from graticule.history import RunHistory
-from graticule.models.jobs import JobBusyError, TrainingCancelled, TrainingJob, get_job, sync_training_requested
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.models.zoo import MODEL_KEYS, Profile
-from graticule.schema import is_normal_traffic
+from nids import theme
+from nids.data.prepare import PreparedDataset
+from nids.data.sampling import SingleClassError
+from nids.evaluate import held_out_repeats, quick_metrics, repeats_sentence
+from nids.history import RunHistory
+from nids.models.jobs import JobBusyError, TrainingCancelled, TrainingJob, get_job, sync_training_requested
+from nids.models.train import TrainingRun, TrainRequest
+from nids.models.zoo import MODEL_KEYS, Profile
+from nids.schema import is_normal_traffic
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 
-TEST_PROFILE_ENV = "GRATICULE_TEST_PROFILE"
+TEST_PROFILE_ENV = "NIDS_TEST_PROFILE"
 # Session flag: the job id for which the progress panel has already asked for a full rerun (never twice).
 RERUN_DONE = "fit_rerun_for_job"
 STATUS_TEXT = {"ok": "fitted", "failed": "failed", "cancelled": "cancelled", "skipped": "skipped",
@@ -58,7 +58,7 @@ MARKDOWN_SPECIALS = frozenset("\\`*_{}[]<>()#+-.!|$~")
 
 
 def training_profile() -> Profile:
-    """``"test"`` when the hidden test hook ``GRATICULE_TEST_PROFILE=1`` is set, else ``"full"``."""
+    """``"test"`` when the hidden test hook ``NIDS_TEST_PROFILE=1`` is set, else ``"full"``."""
     return "test" if os.environ.get(TEST_PROFILE_ENV, "").strip() == "1" else "full"
 
 

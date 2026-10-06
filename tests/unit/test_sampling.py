@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule.data import sampling
-from graticule.data.sampling import SingleClassError
+from nids.data import sampling
+from nids.data.sampling import SingleClassError
 
 pytestmark = pytest.mark.unit
 

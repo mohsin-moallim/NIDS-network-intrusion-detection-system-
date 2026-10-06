@@ -13,12 +13,12 @@ import html
 
 import streamlit as st
 
-from graticule.data.prepare import PreparedDataset
-from graticule.data.sampling import SingleClassError, target_for_mode
-from graticule.features import DEFAULT_K, FEATURE_MODES, select_features
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.schema import is_normal_traffic
-from graticule.settings import SVM_CAP_RANGE, AppSettings
+from nids.data.prepare import PreparedDataset
+from nids.data.sampling import SingleClassError, target_for_mode
+from nids.features import DEFAULT_K, FEATURE_MODES, select_features
+from nids.models.train import TrainingRun, TrainRequest
+from nids.schema import is_normal_traffic
+from nids.settings import SVM_CAP_RANGE, AppSettings
 from ui import components, state, training_ui
 
 MODES: tuple[str, ...] = ("binary", "multiclass")

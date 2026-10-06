@@ -1,4 +1,4 @@
-# Graticule: Streamlit configuration. Colours mirror graticule/theme.py (the single source of truth).
+# NIDS: Streamlit configuration. Colours mirror nids/theme.py (the single source of truth).
 
 [server]
 enableStaticServing = true

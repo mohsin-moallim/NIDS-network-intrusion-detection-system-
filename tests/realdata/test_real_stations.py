@@ -29,14 +29,14 @@ import pandas as pd
 import pytest
 from sklearn.metrics import accuracy_score
 
-from graticule import evaluate, explain, scoring, simulate
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
-from graticule.models import train
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
-from graticule.report import exports
-from graticule.report import pdf as rp
-from graticule.schema import FEATURES
-from graticule.settings import AppSettings
+from nids import evaluate, explain, scoring, simulate
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from nids.models import train
+from nids.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from nids.report import exports
+from nids.report import pdf as rp
+from nids.schema import FEATURES
+from nids.settings import AppSettings
 from tests.unit.test_report_pdf import inflated, outline, pdf_text
 
 pytestmark = [pytest.mark.realdata, pytest.mark.slow]
@@ -158,7 +158,7 @@ def test_record_of_a_real_run(real_run: tuple[PreparedDataset, TrainingRun]) -> 
     plain = inflated(data)
     assert outline(plain) == sections == list(report.sections)
     text = pdf_text(plain)
-    for phrase in ("Graticule", run.run_id, WEDNESDAY, "Sharafaldin", "ICISSP", "Balanced accuracy", "Consensus",
+    for phrase in ("NIDS", run.run_id, WEDNESDAY, "Sharafaldin", "ICISSP", "Balanced accuracy", "Consensus",
                    "CH3 RBF SVM", f"page {report.pages} of {report.pages}"):
         assert phrase in text, phrase
     assert not {"○", "◆", "▲", "µ"} & set(text)  # the fonts have no such glyphs

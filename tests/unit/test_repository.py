@@ -1,4 +1,4 @@
-"""Repository hygiene: licence, ignore rules, and theme config that agrees with graticule.theme."""
+"""Repository hygiene: the app's name, licence, ignore rules, and theme config that agrees with nids.theme."""
 
 from __future__ import annotations
 
@@ -7,10 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from graticule import theme
+import nids
+from nids import theme
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_the_name_is_set_in_one_place_and_the_project_files_agree() -> None:
+    assert (nids.APP_NAME, nids.APP_FULL_NAME) == ("NIDS", "Network Intrusion Detection System")
+    assert nids.APP_TITLE == "NIDS — Network Intrusion Detection System"
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["name"] == nids.__name__ == "nids"
+    assert project["version"] == nids.__version__ and project["description"] == nids.TAGLINE
+    assert f'aria-label="{nids.APP_NAME}"' in (ROOT / "static" / "nids-icon.svg").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert readme.startswith(f"# {nids.APP_TITLE}\n\n*{nids.TAGLINE}*\n")
 
 
 def test_license_names_owner_and_year() -> None:

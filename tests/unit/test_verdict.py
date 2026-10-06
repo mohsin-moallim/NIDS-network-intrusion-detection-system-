@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from graticule.models.verdict import Consensus, alert_flags, combine
+from nids.models.verdict import Consensus, alert_flags, combine
 
 pytestmark = pytest.mark.unit
 
@@ -66,7 +66,7 @@ def test_an_alert_needs_an_attack_verdict_and_the_threshold() -> None:
 
 def test_the_probe_reads_alerts_by_the_same_rule() -> None:
     """A flow read as BENIGN with 1 - P(BENIGN) above the threshold raises no alert at 04 Probe either."""
-    from graticule.explain import FlowVerdict
+    from nids.explain import FlowVerdict
 
     proba = {"a": np.array([0.4, 0.3, 0.3], dtype=np.float32), "b": np.array([0.1, 0.8, 0.1], dtype=np.float32)}
     verdict = FlowVerdict(classes=("BENIGN", "DoS", "PortScan"), channels=("a", "b"), proba=proba,

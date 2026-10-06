@@ -25,8 +25,8 @@ import pytest
 from streamlit.proto.WidgetStates_pb2 import WidgetState
 from streamlit.testing.v1 import AppTest
 
-from graticule import explain, persist
-from graticule.models import train
+from nids import explain, persist
+from nids.models import train
 from tests.ui.harness import app_with_run, errors, fit_synthetic, fresh_caches, goto, new_app  # noqa: F401
 from ui import state
 from ui.pages import probe
@@ -91,7 +91,7 @@ def _fitted_app(mode: str = "binary", channels: list[str] | None = None) -> AppT
 
 
 def _verdict_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Count the page's calls of the scoring and explaining functions of graticule.explain."""
+    """Count the page's calls of the scoring and explaining functions of nids.explain."""
     calls: list[int] = []
     for name in ("score_flow", "reference_swap", "xgboost_contributions"):
         original = getattr(explain, name)

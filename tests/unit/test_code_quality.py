@@ -17,7 +17,7 @@ from types import ModuleType
 
 import pytest
 
-import graticule
+import nids
 import ui
 
 pytestmark = pytest.mark.unit
@@ -32,9 +32,9 @@ def _modules(package: ModuleType) -> list[ModuleType]:
 
 
 def test_core_sources_never_import_streamlit_or_the_ui() -> None:
-    """No module under graticule/ imports Streamlit, or the ui package built on it (read from the sources)."""
+    """No module under nids/ imports Streamlit, or the ui package built on it (read from the sources)."""
     problems: list[str] = []
-    for path in sorted((ROOT / "graticule").rglob("*.py")):
+    for path in sorted((ROOT / "nids").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -54,8 +54,8 @@ def test_core_sources_never_import_streamlit_or_the_ui() -> None:
 def test_core_never_imports_streamlit() -> None:
     """Import every core module in a fresh interpreter and check Streamlit was not pulled in."""
     code = (
-        "import importlib, pkgutil, sys, graticule\n"
-        "for m in pkgutil.walk_packages(graticule.__path__, prefix='graticule.'):\n"
+        "import importlib, pkgutil, sys, nids\n"
+        "for m in pkgutil.walk_packages(nids.__path__, prefix='nids.'):\n"
         "    importlib.import_module(m.name)\n"
         "bad = sorted(n for n in sys.modules if n == 'streamlit' or n.startswith('streamlit.'))\n"
         "print('LEAK' if bad else 'CLEAN')\n"
@@ -85,7 +85,7 @@ def _public_callables(module: ModuleType) -> list[tuple[str, object]]:
     return found
 
 
-@pytest.mark.parametrize("package", [graticule, ui], ids=["graticule", "ui"])
+@pytest.mark.parametrize("package", [nids, ui], ids=["nids", "ui"])
 def test_public_api_is_documented_and_typed(package: ModuleType) -> None:
     problems: list[str] = []
     for module in _modules(package):

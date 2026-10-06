@@ -1,12 +1,12 @@
 """03 Measure station: the fitted channels side by side, then each one in detail.
 
 Everything here is read from the current run (:func:`ui.state.current_run`). The readings of every channel are
-computed once per run by :func:`graticule.evaluate.evaluate_run` and kept on the run object, so changing a widget on
+computed once per run by :func:`nids.evaluate.evaluate_run` and kept on the run object, so changing a widget on
 this page only redraws: it never recomputes the readings and never refits anything.
 
 The first control picks what a reading counts. "Distinct flows" (the default) counts every held-out row once, as
 every reading of the brief does. "Recorded traffic (estimate)" weights each held-out row by the recorded flows it
-stands for (:func:`graticule.evaluate.traffic_readings`, computed once per run from the stored probabilities, the
+stands for (:func:`nids.evaluate.traffic_readings`, computed once per run from the stored probabilities, the
 first time the view or a download needs it): the leaderboard, its dot plot, the class chart beside it, the
 confusion matrices and the per-class table follow it; the curves, importance, timing and cross-validation always
 count distinct flows. When heavily repeated flows that missed the held-out rows decide much of the estimate, a
@@ -22,12 +22,12 @@ Two measurements do extra work, and only when their buttons are pressed:
 * permutation importance (held-out rows only; nothing is fitted), and
 * cross-validation (fresh channel copies fitted in folds of the TRAINING rows; the held-out rows play no part).
 
-Both run as an exclusive :class:`graticule.evaluate.EvaluationTask` on a background thread (inline when
-``GRATICULE_SYNC_TRAINING=1``, as in the headless tests), with a progress panel that refreshes itself once a second
+Both run as an exclusive :class:`nids.evaluate.EvaluationTask` on a background thread (inline when
+``NIDS_SYNC_TRAINING=1``, as in the headless tests), with a progress panel that refreshes itself once a second
 and a Cancel button. Exclusive means they take the app's single work slot: neither starts while a fit or the other
 measurement runs anywhere in the app (their buttons are disabled meanwhile, with a note), and 02 Fit refuses to
 start a fit while one of them runs. Their results are kept on the run object as well
-(:func:`graticule.evaluate.stored_cross_validation`, :func:`graticule.evaluate.stored_permutations`), where other
+(:func:`nids.evaluate.stored_cross_validation`, :func:`nids.evaluate.stored_permutations`), where other
 stations (07 Record) can read them.
 """
 
@@ -43,13 +43,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from graticule import evaluate, theme, viz
-from graticule.evaluate import ChannelEvaluation, EvaluationTask
-from graticule.report import exports
-from graticule.models.jobs import JobBusyError, slot_holder, sync_training_requested
-from graticule.models.train import TrainingRun
-from graticule.schema import is_normal_traffic
-from graticule.theme import Mode
+from nids import evaluate, theme, viz
+from nids.evaluate import ChannelEvaluation, EvaluationTask
+from nids.report import exports
+from nids.models.jobs import JobBusyError, slot_holder, sync_training_requested
+from nids.models.train import TrainingRun
+from nids.schema import is_normal_traffic
+from nids.theme import Mode
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 from ui.training_ui import channel_label, format_elapsed, svm_rows_note
@@ -773,17 +773,17 @@ def _downloads(run: TrainingRun, evals: dict[str, ChannelEvaluation], board: pd.
     columns = st.columns(3, gap="small")
     with columns[0]:
         st.download_button("Leaderboard (CSV)", lambda: board_csv(run, evals, board),
-                           file_name=f"graticule-leaderboard-{run.run_id}.csv", mime="text/csv",
+                           file_name=f"nids-leaderboard-{run.run_id}.csv", mime="text/csv",
                            key="ms_dl_board", on_click="ignore", width="stretch")
     with columns[1]:
         st.download_button("Per-class readings (CSV)", lambda: per_class_csv(run, evals),
-                           file_name=f"graticule-per-class-{run.run_id}.csv", mime="text/csv",
+                           file_name=f"nids-per-class-{run.run_id}.csv", mime="text/csv",
                            key="ms_dl_per_class", on_click="ignore", width="stretch")
     with columns[2]:
         cv = evaluate.stored_cross_validation(run)
         if cv is not None and not cv.empty:
             st.download_button("Cross-validation (CSV)", cv.to_csv(index=False).encode("utf-8-sig"),
-                               file_name=f"graticule-cross-validation-{run.run_id}.csv", mime="text/csv",
+                               file_name=f"nids-cross-validation-{run.run_id}.csv", mime="text/csv",
                                key="ms_dl_cv", on_click="ignore", width="stretch")
         else:
             st.caption("Run cross-validation to add its table here.")

@@ -12,11 +12,11 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from graticule import persist
-from graticule.data.prepare import DataRequest, prepare_dataset
-from graticule.models import train
-from graticule.models.train import TrainRequest, build_training_data, train_all
-from graticule.settings import AppSettings
+from nids import persist
+from nids.data.prepare import DataRequest, prepare_dataset
+from nids.models import train
+from nids.models.train import TrainRequest, build_training_data, train_all
+from nids.settings import AppSettings
 from tests.helpers import make_rows, write_cic_csv
 from tests.ui.harness import app_with_run, errors, fit_synthetic, fresh_caches, goto, new_app  # noqa: F401
 from ui import state

@@ -14,7 +14,7 @@ from streamlit.runtime.scriptrunner_utils.script_requests import RerunData
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1 import local_script_runner
 
-from graticule import theme
+from nids import theme
 from ui.stations import ALL_STATIONS, BY_KEY
 
 pytestmark = pytest.mark.ui

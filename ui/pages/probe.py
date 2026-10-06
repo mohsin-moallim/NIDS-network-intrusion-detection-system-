@@ -23,13 +23,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from graticule import explain, theme, viz
-from graticule.data.prepare import FILE_COL, ROW_COL, SYNTHETIC_FILE, PreparedDataset
-from graticule.explain import Explanation, FlowVerdict
-from graticule.models.train import TrainingRun
-from graticule.models.verdict import ALERT_RULE
-from graticule.schema import is_normal_traffic
-from graticule.theme import Mode
+from nids import explain, theme, viz
+from nids.data.prepare import FILE_COL, ROW_COL, SYNTHETIC_FILE, PreparedDataset
+from nids.explain import Explanation, FlowVerdict
+from nids.models.train import TrainingRun
+from nids.models.verdict import ALERT_RULE
+from nids.schema import is_normal_traffic
+from nids.theme import Mode
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 from ui.training_ui import channel_label

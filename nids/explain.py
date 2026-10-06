@@ -1,7 +1,7 @@
 """04 Probe's core: one flow read by every fitted channel, and which features moved a channel's reading.
 
 Scoring. :func:`score_flow` asks each chosen channel for its class probabilities on a single flow and combines
-them into the consensus (:func:`graticule.models.verdict.combine`): equal weight per channel, the most probable
+them into the consensus (:func:`nids.models.verdict.combine`): equal weight per channel, the most probable
 class, and how many channels picked that class on their own. Probabilities are tidied exactly as the trainer tidies
 the held-out readings, and a held-out flow named by its position takes the very readings the run stored for it (a
 neural net or logistic regression scoring one row alone can differ from its block-scored reading in the last
@@ -38,16 +38,16 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
-from graticule.data import sampling
-from graticule.models.train import QUANTILE_LEVELS, REFERENCE_ROWS, _tidy_proba
-from graticule.models.verdict import Consensus, alert_flags, combine
-from graticule.models.verdict import attack_probability as attack_probability_of
-from graticule.persist import deterministic
-from graticule.schema import is_normal_traffic
-from graticule.theme import CHANNEL_BY_KEY
+from nids.data import sampling
+from nids.models.train import QUANTILE_LEVELS, REFERENCE_ROWS, _tidy_proba
+from nids.models.verdict import Consensus, alert_flags, combine
+from nids.models.verdict import attack_probability as attack_probability_of
+from nids.persist import deterministic
+from nids.schema import is_normal_traffic
+from nids.theme import CHANNEL_BY_KEY
 
 if TYPE_CHECKING:
-    from graticule.models.train import TrainingRun
+    from nids.models.train import TrainingRun
 
 Method = Literal["xgboost_exact", "reference_swap"]
 #: Units of each method's contributions.
@@ -119,7 +119,7 @@ class FlowVerdict:
         classes: class names in code order.
         channels: channel keys scored, in channel order.
         proba: channel key -> class probabilities of the flow (float32, length K, summing to 1).
-        consensus: the combined reading (:class:`~graticule.models.verdict.Consensus`, one flow).
+        consensus: the combined reading (:class:`~nids.models.verdict.Consensus`, one flow).
     """
 
     classes: tuple[str, ...]
@@ -155,7 +155,7 @@ class FlowVerdict:
 
         Two classes (binary runs): the probability of the attack class. More classes: one minus the probability
         of the normal class. NaN when the run has no normal class. Computed by
-        :func:`graticule.models.verdict.attack_probability`, as at 05 Assay and 06 Sweep.
+        :func:`nids.models.verdict.attack_probability`, as at 05 Assay and 06 Sweep.
         """
         if self.normal_index is None:
             return float("nan")
@@ -164,7 +164,7 @@ class FlowVerdict:
     def raises_alert(self, key: str | None, threshold: float) -> bool:
         """True when channel ``key`` (None: the consensus) raises a high-confidence alert on the flow: its verdict
         is an attack class and its attack probability is at least ``threshold`` (the rule 05 Assay and 06 Sweep
-        use, :func:`graticule.models.verdict.alert_flags`)."""
+        use, :func:`nids.models.verdict.alert_flags`)."""
         index = self.consensus_index if key is None else self.label_index(key)
         # Without a normal class every flow is read as an attack with certainty (as 05 Assay and 06 Sweep read it).
         return bool(alert_flags(self._attack_values(key), np.asarray([index]), self.normal_index, threshold)[0])
@@ -379,10 +379,10 @@ def background_from_quantiles(quantiles: np.ndarray, n: int, seed: int) -> np.nd
 
     Each value follows its feature's training distribution (the quantile curve at an independent random level),
     so no vector is, or copies, a dataset row. Used for channel sets loaded from disk without their training rows;
-    these are the same kind of vectors :func:`graticule.persist.restore_run` keeps as such a run's reference
+    these are the same kind of vectors :func:`nids.persist.restore_run` keeps as such a run's reference
     sample. A feature without finite quantiles gives NaN (missing) throughout.
     """
-    from graticule.persist import quantile_vectors
+    from nids.persist import quantile_vectors
 
     return quantile_vectors(np.asarray(quantiles, dtype=np.float32), int(n), int(seed))
 

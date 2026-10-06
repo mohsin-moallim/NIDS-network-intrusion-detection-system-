@@ -1,5 +1,5 @@
 [project]
-name = "graticule"
+name = "nids"
 version = "0.1.0"
 description = "A measuring bench for training, testing and comparing network-intrusion classifiers."
 readme = "README.md"

@@ -13,12 +13,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule.data.clean import find_degenerate_columns
-from graticule.data.prepare import DataRequest, prepare_dataset, read_source_file
-from graticule.data.reader import FileReadReport, read_flow_csv
-from graticule.data.sampling import SingleClassError, target_for_mode
-from graticule.features import select_features
-from graticule.schema import CURATED, DESTINATION_PORT, EXPECTED_FILES, FEATURES, KNOWN_LABELS, LABEL
+from nids.data.clean import find_degenerate_columns
+from nids.data.prepare import DataRequest, prepare_dataset, read_source_file
+from nids.data.reader import FileReadReport, read_flow_csv
+from nids.data.sampling import SingleClassError, target_for_mode
+from nids.features import select_features
+from nids.schema import CURATED, DESTINATION_PORT, EXPECTED_FILES, FEATURES, KNOWN_LABELS, LABEL
 
 pytestmark = pytest.mark.realdata
 WEDNESDAY = "Wednesday-workingHours.pcap_ISCX.csv"

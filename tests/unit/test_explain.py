@@ -1,4 +1,4 @@
-"""Single-flow explanations and scoring (graticule.explain) and the contribution chart (graticule.viz).
+"""Single-flow explanations and scoring (nids.explain) and the contribution chart (nids.viz).
 
 * XGBoost exact contributions plus the bias equal the raw margin, binary and multi-class, also for a flow with
   missing and infinite values; the binary "Normal" side is the mirror image.
@@ -19,11 +19,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule import explain, theme, viz
-from graticule.data.prepare import DataRequest
-from graticule.models import train, zoo
-from graticule.models.train import TrainRequest, feature_quantiles
-from graticule.models.zoo import BuildContext
+from nids import explain, theme, viz
+from nids.data.prepare import DataRequest
+from nids.models import train, zoo
+from nids.models.train import TrainRequest, feature_quantiles
+from nids.models.zoo import BuildContext
 from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit

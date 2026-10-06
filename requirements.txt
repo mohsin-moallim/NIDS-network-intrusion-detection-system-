@@ -1,4 +1,4 @@
-# Graticule runtime and test dependencies (Python 3.12+, tested on 3.13, Windows).
+# NIDS runtime and test dependencies (Python 3.12+, tested on 3.13, Windows).
 # Exact pins keep a fresh install reproducible; see requirements-lock.txt for the full resolved set.
 streamlit==1.64.0
 pandas==3.0.6

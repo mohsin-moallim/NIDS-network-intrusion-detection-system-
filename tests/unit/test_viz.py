@@ -9,8 +9,8 @@ import pandas as pd
 import pytest
 from sklearn.metrics import precision_recall_curve, roc_curve
 
-from graticule import theme, viz
-from graticule.models.zoo import MODEL_KEYS
+from nids import theme, viz
+from nids.models.zoo import MODEL_KEYS
 
 pytestmark = pytest.mark.unit
 MODES = ["light", "dark"]
@@ -30,7 +30,7 @@ def _curve(seed: int, kind: str = "roc", n: int = 3_000) -> pd.DataFrame:
 
 @pytest.fixture
 def board() -> pd.DataFrame:
-    """A leaderboard in the shape :func:`graticule.evaluate.leaderboard` returns (binary columns)."""
+    """A leaderboard in the shape :func:`nids.evaluate.leaderboard` returns (binary columns)."""
     rows = []
     for i, key in enumerate(MODEL_KEYS):
         rows.append({"key": key, "Channel": theme.CHANNEL_BY_KEY[key].label, "Balanced accuracy": 0.999 - i * 0.01,

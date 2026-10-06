@@ -55,7 +55,7 @@ def drawn_sample(flows: int = 2_000, budget: int = 1_600, seed: int = 42) -> Any
     sample each time; ``test_fit_page.py`` checks that a draw through the form gives this very sample. The object is
     shared between tests, so it must never be changed.
     """
-    from graticule.data.prepare import DataRequest
+    from nids.data.prepare import DataRequest
 
     return shared_sample(DataRequest(source="synthetic", synthetic_flows=flows, row_budget=budget, seed=seed))
 
@@ -93,13 +93,13 @@ def app_with_run(run: object, prepared: object | None = None, key: str = "sample
 
 def fit_synthetic(flows: int = 2_000, budget: int = 1_200, seed: int = 42, **request: object) -> tuple[Any, Any]:
     """A synthetic sample (``flows`` generated, ``budget`` kept) and a ``profile="test"`` fit of it, as 01 Sample
-    and 02 Fit make them; ``request`` sets other :class:`~graticule.models.train.TrainRequest` fields (mode,
+    and 02 Fit make them; ``request`` sets other :class:`~nids.models.train.TrainRequest` fields (mode,
     channels...). Returns (prepared sample, run).
 
     Each distinct fit is made once per test session (:func:`tests.helpers.shared_fit`); every call returns a fresh
     copy of the run, so the readings, results and bundle path a test leaves on it stay with that test.
     """
-    from graticule.models.train import TrainRequest
+    from nids.models.train import TrainRequest
 
     prepared = drawn_sample(flows, budget, seed)
     fit = TrainRequest(**{"profile": "test", "seed": seed, **request})  # type: ignore[arg-type]
@@ -193,9 +193,9 @@ def touch_every_widget(at: AppTest, after_each: Callable[[str], None]) -> list[s
 def fresh_caches(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Empty every ``st.cache_resource`` cache (run registry, file caches) around a test; shrink the models.
 
-    ``GRATICULE_TEST_PROFILE=1`` is the hidden hook that makes 02 Fit use ``profile="test"`` models.
+    ``NIDS_TEST_PROFILE=1`` is the hidden hook that makes 02 Fit use ``profile="test"`` models.
     """
-    monkeypatch.setenv("GRATICULE_TEST_PROFILE", "1")
+    monkeypatch.setenv("NIDS_TEST_PROFILE", "1")
     st.cache_resource.clear()
     yield
     st.cache_resource.clear()

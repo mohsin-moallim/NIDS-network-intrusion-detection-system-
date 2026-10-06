@@ -1,7 +1,7 @@
 """The five channels: what each model is, how its pipeline is built, and the sample weights it trains with.
 
 Every channel is an unfitted scikit-learn :class:`~sklearn.pipeline.Pipeline` whose first step is a
-:class:`~graticule.models.transforms.FlowSanitizer` (float32, ±inf to NaN) and whose last step is named
+:class:`~nids.models.transforms.FlowSanitizer` (float32, ±inf to NaN) and whose last step is named
 ``"model"``. Models that are sensitive to the scale of their inputs (the SVM, the MLP and logistic regression) add a
 median imputer, a signed logarithm and a standard scaler in between. The tree models need none of that: XGBoost and
 scikit-learn's random forest both route missing values natively (checked for scikit-learn 1.9: the forest declares
@@ -39,9 +39,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from xgboost import XGBClassifier
 
-from graticule.models.transforms import FlowSanitizer, make_signed_log
+from nids.models.transforms import FlowSanitizer, make_signed_log
 
-#: Channel keys in their fixed order (the same order as ``graticule.theme.CHANNELS``).
+#: Channel keys in their fixed order (the same order as ``nids.theme.CHANNELS``).
 MODEL_KEYS: tuple[str, ...] = ("forest", "xgboost", "svm", "mlp", "logreg")
 Profile = Literal["full", "test"]
 PROFILES: tuple[str, ...] = ("full", "test")
@@ -184,7 +184,7 @@ def _scaled_steps() -> list[tuple[str, object]]:
 
 
 def _build_forest(ctx: BuildContext) -> Pipeline:
-    """Random forest; the fit grows it in warm-start chunks (see ``graticule.models.train``)."""
+    """Random forest; the fit grows it in warm-start chunks (see ``nids.models.train``)."""
     full = ctx.profile == "full"
     model = RandomForestClassifier(
         n_estimators=150 if full else 20, max_features="sqrt", min_samples_leaf=2, max_samples=0.5, bootstrap=True,

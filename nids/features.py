@@ -3,11 +3,11 @@
 Three modes are offered.
 
 * ``curated`` - a fixed list of 28 columns picked for what each one measures (see
-  :data:`graticule.schema.CURATED_GROUPS`). It is chosen without looking at any data, so it cannot leak anything.
+  :data:`nids.schema.CURATED_GROUPS`). It is chosen without looking at any data, so it cannot leak anything.
 * ``all`` - every numeric column except the destination port and the columns found to be degenerate (constant or
   exact copies of another column) on the data in hand.
 
-Degenerate columns are best passed as the :class:`~graticule.data.clean.DegenerateReport` itself. Constant columns
+Degenerate columns are best passed as the :class:`~nids.data.clean.DegenerateReport` itself. Constant columns
 are then always left out, but a column that merely repeats another one is left out only when the column it repeats
 is also chosen. In the real files, for example, ``SYN Flag Count`` is an exact copy of ``Fwd PSH Flags``: the
 ``all`` set keeps only the earlier column, while the curated set, which does not contain ``Fwd PSH Flags``, keeps
@@ -31,8 +31,8 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from graticule import schema
-from graticule.data.clean import DegenerateReport
+from nids import schema
+from nids.data.clean import DegenerateReport
 
 FeatureMode = Literal["curated", "all", "topk"]
 FEATURE_MODES: tuple[FeatureMode, ...] = ("curated", "all", "topk")
@@ -128,7 +128,7 @@ def select_features(
     the first ``k`` usable names, skipping unavailable and degenerate names and never counting the port towards
     ``k``. ``include_port=True`` appends ``Destination Port`` to any mode when it is available and not degenerate.
 
-    ``degenerate`` is either the :class:`~graticule.data.clean.DegenerateReport` found on the data (preferred) or a
+    ``degenerate`` is either the :class:`~nids.data.clean.DegenerateReport` found on the data (preferred) or a
     collection of column names. With a report, constant columns are always left out and, of a group of identical
     columns, only the first one met in selection order is kept, so a curated column is never lost merely because it
     copies a column outside the curated set. With plain names, every listed column is left out.
@@ -235,15 +235,15 @@ def rank_features(
 
     ``callbacks`` are XGBoost training callbacks for the ranking model (progress, or stopping it early when a fit
     is cancelled; a callback that stops it leaves a ranking from the rounds done so far). The model is thrown away
-    afterwards, so they are never kept anywhere. Like every model Graticule fits, it is fitted through
-    :func:`graticule.models.train.fit_model`, so ``FIT_CALLS`` counts it (key ``RANKING_KEY``).
+    afterwards, so they are never kept anywhere. Like every model NIDS fits, it is fitted through
+    :func:`nids.models.train.fit_model`, so ``FIT_CALLS`` counts it (key ``RANKING_KEY``).
     """
     from sklearn.utils.class_weight import compute_sample_weight
     from xgboost import XGBClassifier
 
     # Imported here: the trainer imports this module, so a module-level import would be circular.
-    from graticule.models.train import RANKING_KEY, fit_model
-    from graticule.models.zoo import BuildContext
+    from nids.models.train import RANKING_KEY, fit_model
+    from nids.models.zoo import BuildContext
 
     names = [str(n) for n in feature_names]
     if len(set(names)) != len(names):

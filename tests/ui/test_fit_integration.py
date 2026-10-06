@@ -1,7 +1,7 @@
 """02 Fit end to end across the station and the training runtime: real jobs, real cancel, Top-K with the port.
 
 The page tests in ``test_fit_page.py`` drive each feature of the station; these tests check that the station and
-:mod:`graticule.models` agree on what flows between them: a real background job cancelled from the progress panel
+:mod:`nids.models` agree on what flows between them: a real background job cancelled from the progress panel
 (the partial run is kept and read back), and a Top-K fit whose ranking report and port opt-in reach the readings.
 Each starts from the session-wide synthetic sample, already drawn (``drawn_sample`` in tests/ui/harness.py).
 """
@@ -14,8 +14,8 @@ import time
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from graticule.models import jobs, train, zoo
-from graticule.schema import DESTINATION_PORT
+from nids.models import jobs, train, zoo
+from nids.schema import DESTINATION_PORT
 from tests.ui.harness import app_with_sample, drawn_sample, errors, fresh_caches, goto  # noqa: F401
 from ui import state
 
@@ -46,7 +46,7 @@ def test_cancel_in_the_progress_panel_stops_a_real_background_fit(fresh_caches: 
 
     monkeypatch.setitem(zoo.BUILDERS, "xgboost", held_builder)
     at = app_with_sample(drawn_sample(), "fit").run()
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     at.pills(key="fit_channels").set_value(["forest", "xgboost", "logreg"])
     before = train.FIT_CALLS.copy()
     at.button(key="fit_submit").click().run()
@@ -102,7 +102,7 @@ def test_a_background_fit_that_ends_on_another_station_is_adopted_there(fresh_ca
 
     monkeypatch.setitem(zoo.BUILDERS, "logreg", held_builder)
     at = app_with_sample(drawn_sample(), "fit").run()
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "0")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "0")
     at.pills(key="fit_channels").set_value(["logreg"])
     at.button(key="fit_submit").click().run()
     job = jobs.get_job(at.session_state[state.JOB_ID])

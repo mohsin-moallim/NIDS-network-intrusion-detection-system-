@@ -13,22 +13,24 @@ import math
 import shutil
 import subprocess
 import sys
+import types
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 import pytest
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from graticule import __version__, evaluate, persist
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
-from graticule.models import train as train_mod
-from graticule.models.train import FIT_CALLS, TrainingData, TrainingRun, TrainRequest, build_training_data, train_all
-from graticule.models.zoo import MODEL_KEYS
-from graticule.persist import (
+from nids import __version__, evaluate, persist
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from nids.models import train as train_mod
+from nids.models.train import FIT_CALLS, TrainingData, TrainingRun, TrainRequest, build_training_data, train_all
+from nids.models.zoo import MODEL_KEYS
+from nids.persist import (
     BundleIntegrityError,
     RebuildError,
     delete_bundle,
@@ -41,7 +43,7 @@ from graticule.persist import (
     score_exactly,
     write_manifest,
 )
-from graticule.schema import FEATURES
+from nids.schema import FEATURES
 from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.integration
@@ -279,7 +281,7 @@ LOADER = """
 import json, sys
 from pathlib import Path
 import numpy as np
-from graticule import persist
+from nids import persist
 
 inputs = np.load(sys.argv[1])
 report = {}
@@ -411,6 +413,37 @@ def test_a_manifest_that_does_not_fit_its_models_is_refused(bundles: dict[str, P
         load_bundle(folder)
     write_manifest(folder, manifest)  # the original content, sealed again: accepted and verified
     assert load_bundle(folder).verification.verified
+
+
+@pytest.mark.parametrize(("name", "channel"), [("logreg.joblib", "CH5 Logistic regression"),
+                                               ("xgboost.joblib", "CH2 XGBoost")])
+def test_a_model_file_that_names_missing_code_is_reported_in_plain_words(bundles: dict[str, Path], tmp_path: Path,
+                                                                         name: str, channel: str) -> None:
+    """A model file written when the program's code was arranged differently (by an earlier version of the app) names
+    modules this version does not have. The load stops with a plain, one-line message that says what to do and leaves
+    the missing module's name out."""
+    folder = _copy(bundles["binary"], tmp_path)
+    former = types.ModuleType("layout_of_an_earlier_version")
+
+    class Sanitizer:
+        """Stands for a class whose module no longer exists."""
+
+    Sanitizer.__module__, Sanitizer.__qualname__ = former.__name__, "Sanitizer"
+    former.Sanitizer = Sanitizer  # type: ignore[attr-defined]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(sys.modules, former.__name__, former)
+        joblib.dump(Sanitizer(), folder / name)  # pickled by reference to a module that is about to disappear
+    assert former.__name__ not in sys.modules
+    manifest = _manifest(folder)
+    manifest["files"][name] = persist.sha256_file(folder / name)
+    write_manifest(folder, manifest)  # every checksum agrees: only the code the file names is gone
+    with pytest.raises(persist.BundleReadError) as caught:
+        load_bundle(folder)
+    message = str(caught.value)
+    assert message.startswith(f"{channel} could not be read from {folder.name}: its model file was written by an "
+                              "earlier version of NIDS")
+    assert message.endswith("Fit the channels again at 02 Fit and save a new set.")
+    assert former.__name__ not in message and "ModuleNotFoundError" not in message and "\n" not in message
 
 
 def test_a_library_version_change_is_reported_and_the_bundle_is_not_verified(

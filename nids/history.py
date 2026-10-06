@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from graticule import settings as settings_mod
+from nids import settings as settings_mod
 
 if TYPE_CHECKING:
-    from graticule.models.train import TrainingRun
+    from nids.models.train import TrainingRun
 
 #: Name of the history file inside ``settings.HISTORY_DIR``.
 HISTORY_FILE = "runs.sqlite3"
@@ -34,7 +34,7 @@ COLUMNS: tuple[str, ...] = (
     "run_id", "created_utc", "source", "files", "mode", "feature_mode", "rows_train", "rows_test", "channels",
     "best_channel", "best_balanced_accuracy", "metrics_json", "settings_json", "seconds", "saved_path",
 )
-#: The order channels are listed in (same as ``graticule.models.zoo.MODEL_KEYS``; repeated here so this module
+#: The order channels are listed in (same as ``nids.models.zoo.MODEL_KEYS``; repeated here so this module
 #: stays light to import).
 CHANNEL_ORDER: tuple[str, ...] = ("forest", "xgboost", "svm", "mlp", "logreg")
 

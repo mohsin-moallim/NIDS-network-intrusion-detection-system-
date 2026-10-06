@@ -60,7 +60,7 @@ Held-out rows are never stored either. :func:`rebuild_training_data` re-runs the
 requests on the data folder (or the generator, for synthetic runs) and checks that the very same rows, with the very
 same feature values, come out (a Top-K run reuses its recorded ranking rather than ranking again);
 :func:`restore_run` then turns a bundle, with or without those rows, into an ordinary
-:class:`~graticule.models.train.TrainingRun` by prediction only (nothing is fitted again).
+:class:`~nids.models.train.TrainingRun` by prediction only (nothing is fitted again).
 """
 
 from __future__ import annotations
@@ -88,15 +88,15 @@ from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
-from graticule import APP_NAME, __version__
-from graticule import settings as settings_mod
-from graticule.data import sampling
-from graticule.data.prepare import DataRequest, FileReader, FileStager, PreparedDataset, prepare_dataset
-from graticule.data.reader import DataFileError
-from graticule.data.sampling import SingleClassError
-from graticule.evaluate import quick_metrics
-from graticule.features import FeatureChoice
-from graticule.models.train import (
+from nids import APP_NAME, __version__
+from nids import settings as settings_mod
+from nids.data import sampling
+from nids.data.prepare import DataRequest, FileReader, FileStager, PreparedDataset, prepare_dataset
+from nids.data.reader import DataFileError
+from nids.data.sampling import SingleClassError
+from nids.evaluate import quick_metrics
+from nids.features import FeatureChoice
+from nids.models.train import (
     QUANTILE_LEVELS,
     REFERENCE_ROWS,
     ChannelResult,
@@ -107,9 +107,9 @@ from graticule.models.train import (
     build_training_data,
     score_in_blocks,
 )
-from graticule.models.zoo import MODEL_KEYS
-from graticule.settings import replace_with_retry
-from graticule.theme import CHANNEL_BY_KEY
+from nids.models.zoo import MODEL_KEYS
+from nids.settings import replace_with_retry
+from nids.theme import CHANNEL_BY_KEY
 
 #: Version of the bundle layout written by :func:`save_run`; :func:`load_bundle` reads only this version. Format 2
 #: added the manifest's own checksum and the digests of the feature values, and leaves CH3 out unless it is saved
@@ -167,7 +167,8 @@ class BundleIntegrityError(RuntimeError):
 
 
 class BundleReadError(RuntimeError):
-    """A bundle's files are intact but could not be read (for example with a much newer or older library)."""
+    """A bundle's files are intact but could not be read (for example with a much newer or older library, or a set
+    whose model files were written by an earlier version of the app and name code this version does not have)."""
 
 
 class BundleDeleteError(OSError):
@@ -222,7 +223,7 @@ class VerificationReport:
 
     ``hashes_ok`` is True once every file matched its checksum (a mismatch raises instead). ``probes_identical``
     and ``max_abs_diff`` hold, per channel, whether the probe labels and probabilities were reproduced exactly and
-    the largest absolute probability difference. ``version_mismatches`` maps a library (or ``"graticule"``) to its
+    the largest absolute probability difference. ``version_mismatches`` maps a library (or ``"nids"``) to its
     (saved, installed) versions. ``verified`` is True only with no version mismatch and every channel identical.
     """
 
@@ -629,23 +630,23 @@ def _is_xgboost_pipeline(estimator: Any) -> bool:
 
 
 def _richer_metrics(run: TrainingRun) -> dict[str, dict[str, Any]]:
-    """Full metrics per channel from :mod:`graticule.evaluate`, when it offers them (else empty).
+    """Full metrics per channel from :mod:`nids.evaluate`, when it offers them (else empty).
 
     Per fitted channel, the evaluation already cached on the run (03 Measure computes them once per run, through
-    :func:`graticule.evaluate.evaluate_run`) is used as it is. A channel without one (Measure not visited yet, or
+    :func:`nids.evaluate.evaluate_run`) is used as it is. A channel without one (Measure not visited yet, or
     still computing in another session) gets its metrics computed from the stored test predictions and
     probabilities, when the module offers ``classification_metrics``: no model is asked to predict and nothing is
     timed, so saving stays quick. Both give the same numbers. Any failure leaves that channel with the headline
     metrics only.
 
-    When the run can be weighted to its recorded traffic (:func:`graticule.evaluate.traffic_readings`, computed once
+    When the run can be weighted to its recorded traffic (:func:`nids.evaluate.traffic_readings`, computed once
     per run from the stored probabilities), each channel's entry also gets the weighted readings under
     ``traffic_<metric>`` keys, their standard errors (``traffic_accuracy_se``, ``traffic_balanced_accuracy_se``),
     the heavy-flow ranges (``traffic_accuracy_low``/``_high``, ``traffic_balanced_accuracy_low``/``_high``, when the
     run records its heavy-flow account) and ``traffic_flows_represented``: optional keys that older bundles simply
     lack.
     """
-    from graticule import evaluate
+    from nids import evaluate
 
     out: dict[str, dict[str, Any]] = {}
     evaluations = getattr(run, "evaluations", None)
@@ -944,6 +945,18 @@ def _held_file_message(name: str, folder: Path) -> str:
             "Close it elsewhere and load the set again.")
 
 
+def _missing_code_message(key: str, folder: Path) -> str:
+    """The message for a model file that names program code this installation does not have.
+
+    A saved model records where its classes live in the program. A set written by an earlier version of the app,
+    whose code was arranged differently, or with a library that is not installed here, cannot be put together
+    again. The message leaves the missing module's name out: it is no use to the reader.
+    """
+    return (f"{_channel_label(key)} could not be read from {folder.name}: its model file was written by an earlier "
+            f"version of {APP_NAME}, or with a library that is not installed here, and this version cannot open it. "
+            "Fit the channels again at 02 Fit and save a new set.")
+
+
 def _check_files(folder: Path, manifest: Mapping[str, Any]) -> None:
     """Every file the bundle needs is listed, present and matches its recorded SHA-256."""
     files = manifest.get("files")
@@ -988,6 +1001,8 @@ def _load_channels(folder: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
         except PermissionError as exc:
             held = exc.filename if isinstance(exc.filename, str) else (names[0] if names else key)
             raise BundleReadError(_held_file_message(Path(held).name, folder)) from exc
+        except ModuleNotFoundError as exc:
+            raise BundleReadError(_missing_code_message(key, folder)) from exc
         except Exception as exc:  # noqa: BLE001 - reported with the channel and file named
             raise BundleReadError(f"{_channel_label(key)} could not be read from {folder.name} "
                                   f"({type(exc).__name__}: {exc}).") from exc
@@ -1030,7 +1045,7 @@ def _verify(folder: Path, manifest: Mapping[str, Any], channels: Mapping[str, An
             mismatches[name] = (before, now)
     saved_app = str((manifest.get("app") or {}).get("version", "unknown"))
     if saved_app != __version__:
-        mismatches["graticule"] = (saved_app, __version__)
+        mismatches["nids"] = (saved_app, __version__)
     identical: dict[str, bool] = {}
     diffs: dict[str, float] = {}
     try:
@@ -1335,7 +1350,7 @@ def rebuild_prepared(
 
     Synthetic runs are regenerated from their seed. For CIC-IDS2017 runs the files are read from ``data_dir``, or,
     when it is None, from the folder recorded when the run was saved. ``read_file``/``stage_file``/``progress``
-    are passed to :func:`~graticule.data.prepare.prepare_dataset` (the UI passes its cached readers). Raises
+    are passed to :func:`~nids.data.prepare.prepare_dataset` (the UI passes its cached readers). Raises
     :class:`RebuildError` with a readable message when the folder or a file is missing, or when the sample drawn
     differs from the one the run was fitted on.
     """
@@ -1378,7 +1393,7 @@ def rebuild_training_data(
     """Rebuild the training and test matrices the saved run was fitted and measured on.
 
     Re-runs 01 Sample (:func:`rebuild_prepared`, unless the matching ``prepared`` sample is passed) and the matrix
-    building of 02 Fit (:func:`~graticule.models.train.build_training_data`) with the recorded requests, then
+    building of 02 Fit (:func:`~nids.models.train.build_training_data`) with the recorded requests, then
     checks that classes, feature columns, both split fingerprints (rows and labels) and both value digests
     (:func:`content_digests`) equal the recorded ones. Nothing is fitted: a Top-K run reuses the feature ranking
     recorded in its manifest instead of ranking again. Raises :class:`RebuildError` when the data are unavailable
@@ -1439,7 +1454,7 @@ def _score_rows(estimator: Any, X: np.ndarray, n_classes: int, *,
                 after_block: Callable[[int, int], None] | None = None) -> tuple[np.ndarray, float]:
     """Probabilities (float32, n x K, code order) of ``estimator`` on ``X``; returns (proba, seconds).
 
-    The rows are scored in the same fixed blocks as at fit time (:func:`graticule.models.train.score_in_blocks`),
+    The rows are scored in the same fixed blocks as at fit time (:func:`nids.models.train.score_in_blocks`),
     so a model whose arithmetic depends on the batch size (the neural net) reads exactly as it did then. Forests
     score on one thread (:func:`deterministic`), so restoring the same bundle twice gives the very same readings.
     ``after_block`` receives (rows scored so far, rows in all) after each block; it does not change the blocks.
@@ -1464,7 +1479,7 @@ def _rows_reporter(progress: Callable[[str, float], None], label: str, index: in
 
 def restore_run(bundle: LoadedBundle, data: TrainingData | None = None, *,
                 progress: Callable[[str, float], None] | None = None) -> TrainingRun:
-    """Turn a loaded bundle into an ordinary :class:`~graticule.models.train.TrainingRun` (``origin="loaded"``).
+    """Turn a loaded bundle into an ordinary :class:`~nids.models.train.TrainingRun` (``origin="loaded"``).
 
     With ``data`` (from :func:`rebuild_training_data`) every fitted channel scores the held-out rows again (by
     prediction only: nothing is fitted, so ``FIT_CALLS`` does not move), the readings are checked against the saved

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from graticule import schema
+from nids import schema
 
 pytestmark = pytest.mark.unit
 

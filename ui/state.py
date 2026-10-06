@@ -8,7 +8,7 @@ page renders first after the job ends adopts the result (:func:`collect_finished
 fit that finishes while the viewer is on another station is not lost.
 
 Once a finished job's run is stored here (in the registry, the session, or both), the job lets go of it
-(:meth:`~graticule.models.jobs.TrainingJob.release_result`): the few finished jobs the process remembers then hold
+(:meth:`~nids.models.jobs.TrainingJob.release_result`): the few finished jobs the process remembers then hold
 no models or matrices, and the registry's capacity really bounds how many runs stay in memory.
 """
 
@@ -22,13 +22,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import streamlit as st
 
-from graticule.settings import AppSettings, load_settings, resolve_data_dir, save_settings
+from nids.settings import AppSettings, load_settings, resolve_data_dir, save_settings
 
 if TYPE_CHECKING:
-    from graticule.data.prepare import PreparedDataset
-    from graticule.models.jobs import TrainingJob
-    from graticule.models.train import TrainingRun
-    from graticule.scoring import ScoredBatch
+    from nids.data.prepare import PreparedDataset
+    from nids.models.jobs import TrainingJob
+    from nids.models.train import TrainingRun
+    from nids.scoring import ScoredBatch
 
 SETTINGS = "g_settings"
 DONE = "g_done"
@@ -45,7 +45,7 @@ HISTORY_RECORDED = "g_history_recorded"
 HISTORY_ERROR = "g_history_error"
 # Run id -> BundleLoadResult for the runs this session loaded from disk at the Logbook.
 LOADED = "g_loaded_bundles"
-# The last file scored at 05 Assay in this session (a graticule.scoring.ScoredBatch), for 07 Record's exports.
+# The last file scored at 05 Assay in this session (a nids.scoring.ScoredBatch), for 07 Record's exports.
 LAST_ASSAY = "g_last_assay"
 
 NoticeKind = Literal["success", "info", "warning", "error"]
@@ -95,9 +95,9 @@ def set_last_assay(batch: "ScoredBatch") -> None:
 def get_last_assay() -> "ScoredBatch | None":
     """The last file scored at 05 Assay in this session (with the run id it was scored by), or ``None``.
 
-    07 Record reads it for its exports: :meth:`graticule.scoring.ScoredBatch.to_csv_bytes` and ``file_name`` give
+    07 Record reads it for its exports: :meth:`nids.scoring.ScoredBatch.to_csv_bytes` and ``file_name`` give
     the full scored CSV; ``run_id`` says which run scored it (it may be an earlier run than the current one), and
-    :func:`graticule.report.exports.belongs_to_run` tells whether the current run object scored it (a fit and its
+    :func:`nids.report.exports.belongs_to_run` tells whether the current run object scored it (a fit and its
     copy loaded from disk share an id but not their results).
     """
     value = st.session_state.get(LAST_ASSAY)
@@ -155,7 +155,7 @@ class RunRegistry:
         """
         if not self._watched:
             return 0
-        from graticule.models.jobs import get_job
+        from nids.models.jobs import get_job
 
         stored = 0
         for job_id in self.watched():
@@ -251,7 +251,7 @@ def running_job() -> "TrainingJob | None":
     job_id = st.session_state.get(JOB_ID)
     if job_id is None:
         return None
-    from graticule.models.jobs import get_job
+    from nids.models.jobs import get_job
 
     job = get_job(job_id)
     return job if job is not None and not job.finished else None
@@ -262,7 +262,7 @@ def other_fit_running() -> bool:
     watched = run_registry().watched()
     if not watched:
         return False
-    from graticule.models.jobs import get_job
+    from nids.models.jobs import get_job
 
     own = st.session_state.get(JOB_ID)
     for job_id in watched:
@@ -321,7 +321,7 @@ def adopt_job(job: "TrainingJob") -> JobOutcome:
     The job's run is taken from the job, or from the process registry when :meth:`RunRegistry.harvest` already
     moved it there; either way the job lets go of it afterwards.
     """
-    from graticule.data.sampling import SingleClassError
+    from nids.data.sampling import SingleClassError
 
     st.session_state.pop(JOB_ID, None)
     snapshot = job.snapshot()
@@ -354,7 +354,7 @@ def adopt_job(job: "TrainingJob") -> JobOutcome:
 
 def _channel_label(key: str) -> str:
     """Badge and name of a channel key, e.g. ``"CH2 XGBoost"`` (the key itself when unknown)."""
-    from graticule.theme import CHANNEL_BY_KEY
+    from nids.theme import CHANNEL_BY_KEY
 
     style = CHANNEL_BY_KEY.get(key)
     return style.label if style is not None else key
@@ -376,7 +376,7 @@ def collect_finished_job() -> JobOutcome | None:
     job_id = st.session_state.get(JOB_ID)
     if job_id is None:
         return None
-    from graticule.models.jobs import get_job
+    from nids.models.jobs import get_job
 
     job = get_job(job_id)
     if job is None:
@@ -401,7 +401,7 @@ def record_history(run: "TrainingRun") -> None:
     recorded: set[str] = st.session_state.setdefault(HISTORY_RECORDED, set())
     if run.run_id in recorded or getattr(run, "origin", "fitted") != "fitted":
         return
-    from graticule.history import RunHistory
+    from nids.history import RunHistory
 
     saved = getattr(run, "bundle_path", None)
     try:
@@ -428,7 +428,7 @@ def bundle_on_disk(run: "TrainingRun") -> Path | None:
 
 
 #: Why a channel of a fit still on the bench is not in the set it was saved as, and how to include it (keys of
-#: :data:`graticule.persist.UNSAVED_CHANNELS`, whose own reason is the one for a run loaded from disk).
+#: :data:`nids.persist.UNSAVED_CHANNELS`, whose own reason is the one for a run loaded from disk).
 SAVED_WITHOUT: dict[str, str] = {
     "svm": ("CH3 RBF SVM was left out of the saved set, as by default: a kernel SVM is made of its training rows "
             "(its support vectors, standardised). It stays fitted on the bench for this session; to include it in "
@@ -443,7 +443,7 @@ SAVED_UNLESS_TICKED: dict[str, str] = {
 
 def ch3_support_vectors(run: "TrainingRun") -> int | None:
     """Support vectors (training rows) of the fitted CH3 of ``run`` held in memory, or None without a fitted CH3."""
-    from graticule import persist
+    from nids import persist
 
     svm = run.channels.get("svm")
     if svm is None or not svm.ok:
@@ -462,7 +462,7 @@ def saved_training_rows(run: "TrainingRun") -> int:
     deleted since it was saved or loaded) has none: 0. When the manifest of a loaded run's set cannot be read, the
     run itself tells (CH3 came back fitted only when its set holds it).
     """
-    from graticule import persist
+    from nids import persist
 
     folder = bundle_on_disk(run)
     if folder is None:
@@ -483,7 +483,7 @@ def unsaved_channel_note(run: "TrainingRun") -> str:
     that CH3 is still on the bench and how to include it in the set; a fit not saved yet describes the default
     (CH3 stays out unless "Also save CH3" is ticked).
     """
-    from graticule import persist
+    from nids import persist
 
     if getattr(run, "origin", "fitted") == "loaded":
         left_out = [key for key, result in run.channels.items()
@@ -506,7 +506,7 @@ def save_current_run(include_svm: bool = False) -> tuple[NoticeKind, str]:
     """Save this session's current run as a bundle and note the folder in the run history; returns a message.
 
     ``include_svm`` saves CH3 too (by choice: its model holds training rows, see
-    :func:`graticule.persist.save_run`). The message says whether CH3 was saved, and how many training rows the set
+    :func:`nids.persist.save_run`). The message says whether CH3 was saved, and how many training rows the set
     then holds, or that it was left out and how to include it. A run whose only fitted channel is CH3 is refused
     without ``include_svm``, with a message naming the box that saves it. Any failure (no channel to keep, a folder
     of that name already there and damaged, a full disk, a model that cannot be written) comes back as an error
@@ -515,8 +515,8 @@ def save_current_run(include_svm: bool = False) -> tuple[NoticeKind, str]:
     run = current_run()
     if run is None:
         return "warning", "There is no fitted run to save. Fit channels at 02 Fit first."
-    from graticule import persist
-    from graticule.history import RunHistory
+    from nids import persist
+    from nids.history import RunHistory
 
     fitted = run.ok_channels()
     if (not include_svm and fitted and all(key in persist.UNSAVED_CHANNELS for key in fitted)
@@ -598,7 +598,7 @@ def _sample_note(previous: "PreparedDataset | None", rebuilt: "PreparedDataset")
 def load_bundle_into_session(path: Path | str, progress: ProgressFn | None = None) -> BundleLoadResult:
     """Load a saved channel set and make it this session's current run; returns what happened.
 
-    The bundle is checked and verified (:func:`graticule.persist.load_bundle`); a refused bundle changes nothing.
+    The bundle is checked and verified (:func:`nids.persist.load_bundle`); a refused bundle changes nothing.
     Its held-out rows are then rebuilt when possible: from the session's 01 Sample when it is the very sample the
     run was fitted on, else a synthetic run is regenerated from its seed and a CIC-IDS2017 run is read from the
     Bench's data folder (or the folder recorded with the run) when the files are there. When they are rebuilt, the
@@ -607,7 +607,7 @@ def load_bundle_into_session(path: Path | str, progress: ProgressFn | None = Non
     refitted. ``progress`` receives (message, fraction done) at every stage: checking the files, reading and
     cleaning the data files, building the matrices, and each channel reading the held-out rows.
     """
-    from graticule import persist
+    from nids import persist
 
     def tell(message: str, fraction: float) -> None:
         if progress is not None:

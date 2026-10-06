@@ -9,8 +9,8 @@ from numbers import Integral
 import pandas as pd
 import streamlit as st
 
-from graticule import theme
-from graticule.theme import Mode
+from nids import theme
+from nids.theme import Mode
 from ui import state
 from ui.stations import BY_KEY, PAGE_OBJECTS, STATIONS, UTILITIES, Station
 
@@ -39,7 +39,7 @@ def shown_scores(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
     """A copy of ``frame`` whose score ``columns`` (those present) hold what four decimals should print.
 
     Table formats round, so a reading of 0.99998 would print as a perfect 1.0000; such values are held at 0.9999
-    (:func:`graticule.theme.shown_score`). Use the copy for display only: sort and compare on the true values.
+    (:func:`nids.theme.shown_score`). Use the copy for display only: sort and compare on the true values.
     """
     out = frame.copy()
     for name in columns:
@@ -177,7 +177,7 @@ def reading_cards(rows: Sequence[Mapping[str, object]]) -> None:
     """Headline readings as a grid of small cards: a label, the value in the mono face, and a short note.
 
     Each row needs "Reading" and "Value" and may carry "Note" (the shape of
-    :meth:`graticule.data.prepare.PreparedDataset.summary_rows`). Integers get thousands separators; floats are shown
+    :meth:`nids.data.prepare.PreparedDataset.summary_rows`). Integers get thousands separators; floats are shown
     as given, so format them first when a fixed number of decimals matters. Styling comes from :func:`inject_css`.
     """
     cells = []

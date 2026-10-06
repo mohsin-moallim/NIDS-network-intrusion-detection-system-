@@ -12,11 +12,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import graticule.settings as settings_mod
-from graticule.data.prepare import DataRequest
-from graticule.features import FeatureChoice
-from graticule.history import COLUMNS, RunHistory, best_reading, run_summary
-from graticule.models.train import ChannelResult, TrainingData, TrainingRun, TrainRequest
+import nids.settings as settings_mod
+from nids.data.prepare import DataRequest
+from nids.features import FeatureChoice
+from nids.history import COLUMNS, RunHistory, best_reading, run_summary
+from nids.models.train import ChannelResult, TrainingData, TrainingRun, TrainRequest
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[2]
@@ -126,7 +126,7 @@ def test_history_survives_a_new_process(tmp_path: Path) -> None:
     code = (
         "import json, sys\n"
         "from pathlib import Path\n"
-        "from graticule.history import RunHistory\n"
+        "from nids.history import RunHistory\n"
         "history = RunHistory(Path(sys.argv[1]))\n"
         "frame = history.list()\n"
         "print(json.dumps({'ids': frame['run_id'].tolist(), 'best': history.get('20261001-120000-aaaa')['best_channel']}))\n"

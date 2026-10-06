@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import graticule.settings as settings_mod
+import nids.settings as settings_mod
 
 # Resolved once, before any test clears the environment: an explicit --data-dir, else NIDS_DATA_DIR,
 # else the folder saved in local_settings.json. Real-data tests skip when none of these points at a folder.
@@ -58,7 +58,7 @@ def library_versions_read_once() -> Iterator[None]:
     default run), and the versions cannot change while the tests run. Every caller still gets its own copy; tests that
     simulate another version replace ``persist.library_versions`` themselves, as before.
     """
-    from graticule import persist
+    from nids import persist
 
     real = persist.library_versions
     versions = real()
@@ -83,7 +83,7 @@ def quick_latency_timing(monkeypatch: pytest.MonkeyPatch) -> None:
     is a positive number). One call of a forest starts a pool of threads (about 17 ms) and one of a scaled pipeline
     takes about 3 ms, so the readings of a five-channel run take about 0.1 s less than with five to 30 calls.
     """
-    from graticule import evaluate
+    from nids import evaluate
 
     latency = evaluate.single_flow_latency_ms
     if latency.__kwdefaults__ is not None and "budget_seconds" in latency.__kwdefaults__:
@@ -106,8 +106,8 @@ def quick_ranking(monkeypatch: pytest.MonkeyPatch) -> int:
     gains and progress reporting), on a smaller model, so a test that ranks takes a fraction of a second. The
     real-data tests rank with the full model.
     """
-    from graticule import features
-    from graticule.models import train
+    from nids import features
+    from nids.models import train
 
     monkeypatch.setattr(features, "RANK_ROUNDS", QUICK_RANK_ROUNDS)
     monkeypatch.setattr(train, "RANK_ROUNDS", QUICK_RANK_ROUNDS)
@@ -141,5 +141,5 @@ def isolated_settings(request: pytest.FixtureRequest, isolation_root: Path, monk
     monkeypatch.setattr(settings_mod, "SETTINGS_FILE", folder / "local_settings.json")
     monkeypatch.setattr(settings_mod, "MODELS_DIR", folder / "saved_models")
     monkeypatch.setattr(settings_mod, "HISTORY_DIR", folder / "run_history")
-    monkeypatch.setenv("GRATICULE_SYNC_TRAINING", "1")
+    monkeypatch.setenv("NIDS_SYNC_TRAINING", "1")
     return folder

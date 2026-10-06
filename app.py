@@ -1,4 +1,4 @@
-"""Graticule entry point. Start it from the project folder with:
+"""NIDS entry point. Start it from the project folder with:
 
     .\\.venv\\Scripts\\python.exe -m streamlit run app.py
 

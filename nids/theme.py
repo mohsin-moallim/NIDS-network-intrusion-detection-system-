@@ -1,4 +1,4 @@
-"""Visual tokens for Graticule, kept in one place so the UI, the charts and the PDF agree.
+"""Visual tokens for NIDS, kept in one place so the UI, the charts and the PDF agree.
 
 Streamlit only exposes a handful of theme keys, so every colour the app needs (semantic colours for normal and
 attack traffic, channel styles, chart ramps) is defined here and read by whichever layer draws something. So is the

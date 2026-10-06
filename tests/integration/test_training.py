@@ -17,16 +17,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule.data import sampling
-from graticule.data.clean import row_hashes
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.data.sampling import SingleClassError
-from graticule.evaluate import quick_metrics
-from graticule.features import rank_features
-from graticule.models import train as train_mod
-from graticule.models import zoo
-from graticule.models.jobs import STAGE_KEY, CancelToken
-from graticule.models.train import (
+from nids.data import sampling
+from nids.data.clean import row_hashes
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.data.sampling import SingleClassError
+from nids.evaluate import quick_metrics
+from nids.features import rank_features
+from nids.models import train as train_mod
+from nids.models import zoo
+from nids.models.jobs import STAGE_KEY, CancelToken
+from nids.models.train import (
     FIT_CALLS,
     RANKING_KEY,
     ChannelResult,
@@ -38,8 +38,8 @@ from graticule.models.train import (
     new_run_id,
     train_all,
 )
-from graticule.models.zoo import MODEL_KEYS, BuildContext
-from graticule.schema import BENIGN, DESTINATION_PORT, LABEL
+from nids.models.zoo import MODEL_KEYS, BuildContext
+from nids.schema import BENIGN, DESTINATION_PORT, LABEL
 from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.integration

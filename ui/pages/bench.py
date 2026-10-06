@@ -7,10 +7,10 @@ import os
 import pandas as pd
 import streamlit as st
 
-import graticule.settings as settings_mod
-from graticule.models.verdict import ALERT_RULE
-from graticule.schema import EXPECTED_FILES
-from graticule.settings import ENV_DATA_DIR, NONFINITE_STRATEGIES, SVM_CAP_RANGE, AppSettings, resolve_data_dir
+import nids.settings as settings_mod
+from nids.models.verdict import ALERT_RULE
+from nids.schema import EXPECTED_FILES
+from nids.settings import ENV_DATA_DIR, NONFINITE_STRATEGIES, SVM_CAP_RANGE, AppSettings, resolve_data_dir
 from ui import components, state
 
 #: Session key of a message about settings that could not be written to disk (shown once, after the rerun).

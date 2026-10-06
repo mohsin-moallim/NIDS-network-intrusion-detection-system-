@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from graticule import viz
+from nids import viz
 
 pytestmark = pytest.mark.unit
 

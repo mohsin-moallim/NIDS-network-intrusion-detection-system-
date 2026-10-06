@@ -48,9 +48,9 @@ def test_project_tree_names_every_core_and_ui_module() -> None:
     listed = set(_tree_paths())
     expected = {
         f"{package}/{item.name}" + ("/" if item.is_dir() else "")
-        for package in ("graticule", "ui")
+        for package in ("nids", "ui")
         for item in (ROOT / package).iterdir()
-        if item.name not in {"__pycache__", "__init__.py"} or (package == "graticule" and item.name == "__init__.py")
+        if item.name not in {"__pycache__", "__init__.py"} or (package == "nids" and item.name == "__init__.py")
         if item.is_dir() or item.suffix == ".py"
     }
     assert expected - listed == set()

@@ -35,13 +35,13 @@ import pytest
 from PIL import Image
 from streamlit.testing.v1 import AppTest
 
-import graticule.settings as settings_mod
-from graticule import evaluate, explain, persist, scoring, viz
-from graticule.models import train
-from graticule.models.train import TrainingRun
-from graticule.report import exports
-from graticule.schema import FEATURES, LABEL
-from graticule.scoring import CONSENSUS, ScoredBatch
+import nids.settings as settings_mod
+from nids import evaluate, explain, persist, scoring, viz
+from nids.models import train
+from nids.models.train import TrainingRun
+from nids.report import exports
+from nids.schema import FEATURES, LABEL
+from nids.scoring import CONSENSUS, ScoredBatch
 from tests.helpers import write_cic_csv
 from tests.ui.harness import app_with_run, errors, fit_synthetic, fresh_caches, goto  # noqa: F401
 from ui import state
@@ -78,7 +78,7 @@ def _downloads(at: AppTest) -> list[str]:
 
 
 def _blank_png(chart: Any, scale: float = 2, *, background: str | None = None) -> bytes:
-    """Stand-in for :func:`graticule.viz.to_png`: the chart is serialised (its spec is checked against the schema by
+    """Stand-in for :func:`nids.viz.to_png`: the chart is serialised (its spec is checked against the schema by
     ``tests/unit/test_report_pdf.py``), a blank PNG comes back."""
     chart.to_dict(validate=False)
     buffer = io.BytesIO()

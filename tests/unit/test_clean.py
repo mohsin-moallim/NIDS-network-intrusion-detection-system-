@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule.data import clean
-from graticule.schema import FEATURES, LABEL
+from nids.data import clean
+from nids.schema import FEATURES, LABEL
 from tests.helpers import feature_frame, flow_row, make_rows, with_values
 
 pytestmark = pytest.mark.unit

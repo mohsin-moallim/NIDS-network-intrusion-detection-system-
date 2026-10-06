@@ -38,7 +38,7 @@ new capture gives a new run id; replace it here.
 ## How the set was taken
 
 - A separate app server on another port, started by a small launcher that first points
-  `graticule.settings.SETTINGS_FILE`, `MODELS_DIR` and `HISTORY_DIR` at a scratch folder (as relative paths, with that
+  `nids.settings.SETTINGS_FILE`, `MODELS_DIR` and `HISTORY_DIR` at a scratch folder (as relative paths, with that
   folder as the working directory). The owner's settings, saved sets and run history stay untouched, and the paths
   the Logbook prints read `saved_models\...` and `run_history\runs.sqlite3`.
 - Microsoft Edge, headless, driven through the Chrome DevTools Protocol from a short Python script: stations opened

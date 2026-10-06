@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule.data.reader import DataFileError, read_flow_csv
-from graticule.schema import FEATURES, LABEL
+from nids.data.reader import DataFileError, read_flow_csv
+from nids.schema import FEATURES, LABEL
 from tests.helpers import default_rows, flow_row, make_rows, with_values, write_cic_csv
 
 pytestmark = pytest.mark.unit

@@ -26,12 +26,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset, working_set_mb  # noqa: E402
-from graticule.features import FEATURE_MODES  # noqa: E402
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all  # noqa: E402
-from graticule.models.zoo import MODEL_KEYS  # noqa: E402
-from graticule.schema import EXPECTED_BY_NAME  # noqa: E402
-from graticule.settings import list_csv_files, load_settings, resolve_data_dir  # noqa: E402
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset, working_set_mb  # noqa: E402
+from nids.features import FEATURE_MODES  # noqa: E402
+from nids.models.train import TrainingRun, TrainRequest, build_training_data, train_all  # noqa: E402
+from nids.models.zoo import MODEL_KEYS  # noqa: E402
+from nids.schema import EXPECTED_BY_NAME  # noqa: E402
+from nids.settings import list_csv_files, load_settings, resolve_data_dir  # noqa: E402
 
 
 @dataclass
@@ -170,7 +170,7 @@ def format_table(result: BenchmarkResult) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """Command-line entry point."""
-    parser = argparse.ArgumentParser(description="Time the Graticule channels on a prepared sample.")
+    parser = argparse.ArgumentParser(description="Time the NIDS channels on a prepared sample.")
     parser.add_argument("--files", default="", help="Comma-separated CSV names in the data folder (default: all).")
     parser.add_argument("--rows", type=int, default=200_000, help="Row budget of the sample.")
     parser.add_argument("--mode", choices=("binary", "multiclass"), default="binary")

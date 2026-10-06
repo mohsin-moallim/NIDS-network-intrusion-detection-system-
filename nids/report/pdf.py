@@ -2,8 +2,8 @@
 
 :func:`build_report` lays out, on A4 pages in the light palette whatever the app's theme:
 
-* a cover: name, tagline, the run's identity (id, times, data, mode, channels, best channel), the mark key and a
-  contents list with page numbers;
+* a cover: the app's name (short, then in full), tagline, the run's identity (id, times, data, mode, channels, best
+  channel), the mark key and a contents list with page numbers;
 * the sample sheet: how the rows were read, cleaned, de-duplicated and sampled, per file and per class (from the
   01 Sample account of the run's own sample when it is still in memory, else from the run's reports);
 * the fit settings: mode, feature set, weighting, SVM cap and rows used, test share, seed, bad-value strategy, the
@@ -17,8 +17,8 @@
 * optional sections when their results exist: cross-validation, the last Assay batch and the last Sweep;
 * notes and limitations, and the dataset citation.
 
-Charts are drawn by the same builders as the app (:mod:`graticule.viz`, ``mode="light"``) and rendered to PNG by
-vl-convert (:func:`graticule.viz.to_png`), then reduced to an indexed palette so a five-channel record stays well
+Charts are drawn by the same builders as the app (:mod:`nids.viz`, ``mode="light"``) and rendered to PNG by
+vl-convert (:func:`nids.viz.to_png`), then reduced to an indexed palette so a five-channel record stays well
 under 3 MB. Text uses the bundled TTF fonts (Instrument Sans headings, Atkinson Hyperlegible Next body,
 Atkinson Hyperlegible Mono for tables and numbers). Those fonts have no glyphs for the normal/attack/alert marks,
 so the record draws them as small vector shapes (hollow circle, diamond, triangle) beside the words; every string
@@ -47,17 +47,17 @@ import pandas as pd
 from fpdf import FPDF
 from fpdf.fonts import FontFace
 
-from graticule import APP_NAME, TAGLINE, __version__, evaluate, viz
-from graticule.models.jobs import CancelToken, TrainingCancelled
-from graticule.models.verdict import ALERT_RULE
-from graticule.report.exports import belongs_to_run, consensus_metrics, consensus_traffic_metrics
-from graticule.schema import CURATED
-from graticule.theme import CHANNEL_BY_KEY, FONT_BODY, FONT_FILES, FONT_HEADING, FONT_MONO, LIGHT, score_text
+from nids import APP_FULL_NAME, APP_NAME, TAGLINE, __version__, evaluate, viz
+from nids.models.jobs import CancelToken, TrainingCancelled
+from nids.models.verdict import ALERT_RULE
+from nids.report.exports import belongs_to_run, consensus_metrics, consensus_traffic_metrics
+from nids.schema import CURATED
+from nids.theme import CHANNEL_BY_KEY, FONT_BODY, FONT_FILES, FONT_HEADING, FONT_MONO, LIGHT, score_text
 
 if TYPE_CHECKING:
-    from graticule.data.prepare import PreparedDataset
-    from graticule.evaluate import ChannelEvaluation
-    from graticule.models.train import TrainingRun
+    from nids.data.prepare import PreparedDataset
+    from nids.evaluate import ChannelEvaluation
+    from nids.models.train import TrainingRun
 
 ProgressFn = Callable[[str, float], None]
 
@@ -111,7 +111,7 @@ STRATEGY_TEXT: dict[str, str] = {
     "recompute": "rebuild: the two rate columns were recomputed from totals and duration; remaining gaps are filled "
                  "with each channel's training medians",
 }
-#: Leaderboard columns the record prints, per mode (titles of :func:`graticule.evaluate.score_columns`).
+#: Leaderboard columns the record prints, per mode (titles of :func:`nids.evaluate.score_columns`).
 LEADERBOARD_BINARY: tuple[str, ...] = ("Balanced accuracy", "Accuracy", "Precision (attack)", "Recall (attack)",
                                        "F1 (attack)", "ROC-AUC", "Average precision")
 LEADERBOARD_MULTICLASS: tuple[str, ...] = ("Balanced accuracy", "Accuracy", "F1 macro", "F1 weighted",
@@ -192,7 +192,7 @@ class SweepSummary:
 class ReportExtras:
     """Results beyond the readings that the record includes when they exist (each one may be missing).
 
-    ``cross_validation`` is a table of :func:`graticule.evaluate.cross_validate_run`; ``permutations`` maps a
+    ``cross_validation`` is a table of :func:`nids.evaluate.cross_validate_run`; ``permutations`` maps a
     channel key to its permutation-importance table; ``assay`` and ``sweep`` summarise the other stations' work.
     """
 
@@ -204,7 +204,7 @@ class ReportExtras:
     @classmethod
     def from_run(cls, run: "TrainingRun", *, assay: Any = None, sweep: Any = None) -> "ReportExtras":
         """The extras kept with ``run`` (cross-validation, permutation importance), plus the Assay batch and the
-        simulation session when they were made with this run (see :func:`graticule.report.exports.belongs_to_run`)."""
+        simulation session when they were made with this run (see :func:`nids.report.exports.belongs_to_run`)."""
         cv = evaluate.stored_cross_validation(run)
         return cls(
             cross_validation=cv if cv is not None and not cv.empty else None,
@@ -340,7 +340,7 @@ def summarise_prepared(prepared: "PreparedDataset") -> dict[str, Any]:
 # --------------------------------------------------------------------------------------------------------------
 _FONT_LOCK = threading.Lock()
 #: Folder (under the system's temporary folder) caching static instances of the variable fonts.
-FONT_CACHE_NAME = "graticule-pdf-fonts"
+FONT_CACHE_NAME = "nids-pdf-fonts"
 
 
 def static_font(file_name: str, axes: Mapping[str, float]) -> Path:
@@ -353,7 +353,7 @@ def static_font(file_name: str, axes: Mapping[str, float]) -> Path:
     from fontTools.ttLib import TTFont
     from fontTools.varLib import instancer
 
-    from graticule.settings import replace_with_retry
+    from nids.settings import replace_with_retry
 
     source = FONT_DIR / file_name
     tag = "-".join(f"{name}{float(value):g}" for name, value in sorted(axes.items()))
@@ -417,7 +417,7 @@ def _rgb(colour: str) -> tuple[int, int, int]:
 
 def _score(value: Any) -> str:
     """A score with four decimals, or "n/a"; a score short of 1 never prints as 1.0000 (see
-    :func:`graticule.theme.score_text`)."""
+    :func:`nids.theme.score_text`)."""
     return score_text(_number(value))
 
 
@@ -490,7 +490,7 @@ def chart_png(chart: Any) -> bytes:
 # The document
 # --------------------------------------------------------------------------------------------------------------
 class _RecordPDF(FPDF):
-    """A4 pages with Graticule's running header (from page 2) and a footer with page numbers on every page."""
+    """A4 pages with the NIDS running header (from page 2) and a footer with page numbers on every page."""
 
     def __init__(self, run_id: str, built_text: str) -> None:
         super().__init__(orientation="P", unit="mm", format="A4")
@@ -833,6 +833,9 @@ class _Builder:
         pdf.ln(1)
         self.font(HEAD, 34)
         pdf.cell(w=0, h=15, text=APP_NAME, new_x="LMARGIN", new_y="NEXT")
+        self.font(HEAD, 13)
+        pdf.cell(w=0, h=7, text=APP_FULL_NAME, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1)
         self.para(TAGLINE, size=11.5, colour=LIGHT.muted, gap=3)
         pdf.set_draw_color(*_rgb(LIGHT.secondary))
         pdf.set_line_width(0.6)
@@ -1114,10 +1117,10 @@ class _Builder:
         """The compact "Recorded traffic (estimate)" table under the leaderboard, or a note saying why it is absent.
 
         Each channel's readings (and the consensus's) weighted to the recorded traffic the held-out rows stand for
-        (:func:`graticule.evaluate.traffic_readings`), in the leaderboard's row order, with how they are made. When
+        (:func:`nids.evaluate.traffic_readings`), in the leaderboard's row order, with how they are made. When
         heavily repeated flows that missed the held-out rows decide much of the estimate, a caution and a second
         table follow: where each channel's accuracy and balanced accuracy can lie
-        (:func:`graticule.evaluate.heavy_flow_bounds`).
+        (:func:`nids.evaluate.heavy_flow_bounds`).
         """
         run = self.run
         self.subheading("Recorded traffic (estimate)")
@@ -1425,7 +1428,7 @@ class _Builder:
             "another sample moves the numbers; the cross-validation section, when present, shows by how much.",
         ]
         if run.data_request.source == "synthetic":
-            items.append("The flows come from Graticule's own traffic generator. These readings show how well the "
+            items.append("The flows come from the app's own traffic generator. These readings show how well the "
                          "channels separate the simulated patterns and say nothing about real traffic.")
         else:
             items.append("CIC-IDS2017 was captured on one laboratory network over five working days in 2017. Traffic "
@@ -1579,11 +1582,11 @@ def render_report(
 ) -> RenderedReport:
     """Build the record of ``run`` and return it with its page count, image count, sections and build time.
 
-    ``evaluations`` are the run's readings (:func:`graticule.evaluate.evaluate_run`; empty for a run loaded without
+    ``evaluations`` are the run's readings (:func:`nids.evaluate.evaluate_run`; empty for a run loaded without
     its held-out rows, which gets a shorter record of its recorded readings). ``prepared_summary``
     (:func:`summarise_prepared`) is used only when its fingerprint is the run's. ``settings`` are the Bench settings
     as plain values. ``progress`` receives (message, fraction) as the work advances; ``cancel`` is checked between
-    charts (raising :class:`~graticule.models.jobs.TrainingCancelled`). ``compress=False`` leaves the page streams
+    charts (raising :class:`~nids.models.jobs.TrainingCancelled`). ``compress=False`` leaves the page streams
     uncompressed (for inspection in tests). Nothing is fitted and nothing is fetched.
     """
     builder = _Builder(run, evaluations, prepared_summary=prepared_summary, settings=settings,
@@ -1609,8 +1612,8 @@ def build_report(
 
 
 def report_file_name(run_id: str) -> str:
-    """File name of a run's record, e.g. ``graticule-record-20261001-153012-ab12.pdf``."""
-    return f"graticule-record-{run_id}.pdf"
+    """File name of a run's record, e.g. ``nids-record-20261001-153012-ab12.pdf``."""
+    return f"nids-record-{run_id}.pdf"
 
 
 __all__ = [

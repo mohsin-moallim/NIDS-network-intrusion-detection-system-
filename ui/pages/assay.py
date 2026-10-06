@@ -1,11 +1,11 @@
 """05 Assay station: score a whole uploaded CSV of flows with one channel, or with the consensus of every channel.
 
-The work happens only when Score file is pressed. It runs as an exclusive :class:`graticule.evaluate.EvaluationTask`,
+The work happens only when Score file is pressed. It runs as an exclusive :class:`nids.evaluate.EvaluationTask`,
 so it takes the app's single work slot and never runs alongside a fit or a measurement (the button waits, with a
 note, while one of those runs anywhere in the app). The task runs on a background thread with a progress panel that
-refreshes itself every second and a Cancel button, or inline when ``GRATICULE_SYNC_TRAINING=1`` (headless tests).
+refreshes itself every second and a Cancel button, or inline when ``NIDS_SYNC_TRAINING=1`` (headless tests).
 
-The finished :class:`graticule.scoring.ScoredBatch` is kept in session state (:func:`ui.state.set_last_assay`), so
+The finished :class:`nids.scoring.ScoredBatch` is kept in session state (:func:`ui.state.set_last_assay`), so
 changing a widget afterwards only redraws the readings; 07 Record exports the same batch. Nothing is ever fitted
 here: the channels only predict.
 """
@@ -20,14 +20,14 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from graticule import evaluate, scoring, viz
-from graticule.data.reader import DataFileError
-from graticule.report import exports
-from graticule.evaluate import EvaluationTask
-from graticule.models.jobs import CancelToken, JobBusyError, slot_holder, sync_training_requested
-from graticule.models.train import TrainingRun
-from graticule.scoring import ScoredBatch
-from graticule.theme import GLYPH_ALERT, GLYPH_ATTACK, score_text, verdict_text
+from nids import evaluate, scoring, viz
+from nids.data.reader import DataFileError
+from nids.report import exports
+from nids.evaluate import EvaluationTask
+from nids.models.jobs import CancelToken, JobBusyError, slot_holder, sync_training_requested
+from nids.models.train import TrainingRun
+from nids.scoring import ScoredBatch
+from nids.theme import GLYPH_ALERT, GLYPH_ATTACK, score_text, verdict_text
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 from ui.training_ui import format_elapsed

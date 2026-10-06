@@ -13,11 +13,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule.data import prepare
-from graticule.data.prepare import DataRequest, prepare_dataset, read_source_file, stage_rows
-from graticule.data.reader import DataFileError, FileReadReport
-from graticule.data.sampling import SingleClassError, target_for_mode
-from graticule.schema import FEATURES, LABEL
+from nids.data import prepare
+from nids.data.prepare import DataRequest, prepare_dataset, read_source_file, stage_rows
+from nids.data.reader import DataFileError, FileReadReport
+from nids.data.sampling import SingleClassError, target_for_mode
+from nids.schema import FEATURES, LABEL
 from tests.helpers import fake_generator, flow_row, make_rows, with_values, write_cic_csv
 
 pytestmark = pytest.mark.unit
@@ -409,7 +409,7 @@ def test_synthetic_source_runs_the_same_path(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_synthetic_progress_moves_during_generation(monkeypatch: pytest.MonkeyPatch) -> None:
-    from graticule.data import synthetic
+    from nids.data import synthetic
 
     monkeypatch.setattr(synthetic, "BLOCK_FLOWS", 1_000)
     events: list[tuple[str, float]] = []
@@ -424,13 +424,13 @@ def test_synthetic_progress_moves_during_generation(monkeypatch: pytest.MonkeyPa
 
 
 def test_missing_generator_gives_a_readable_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(sys.modules, "graticule.data.synthetic", None)
+    monkeypatch.setitem(sys.modules, "nids.data.synthetic", None)
     with pytest.raises(DataFileError, match="generator is not available"):
         prepare_dataset(DataRequest(source="synthetic", synthetic_flows=2_000))
 
 
 def test_real_generator_matches_the_agreed_interface() -> None:
-    pytest.importorskip("graticule.data.synthetic")
+    pytest.importorskip("nids.data.synthetic")
     ds = prepare_dataset(DataRequest(source="synthetic", synthetic_flows=4_000, row_budget=2_000, seed=3))
     assert ds.rows_sampled <= 2_000
     assert "BENIGN" in ds.class_counts and len(ds.class_counts) >= 2

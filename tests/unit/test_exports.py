@@ -13,12 +13,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from graticule import evaluate
-from graticule.data.prepare import FILE_COL, ROW_COL, DataRequest, PreparedDataset
-from graticule.history import RunHistory
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.report import exports
-from graticule.schema import FEATURE_SET
+from nids import evaluate
+from nids.data.prepare import FILE_COL, ROW_COL, DataRequest, PreparedDataset
+from nids.history import RunHistory
+from nids.models.train import TrainingRun, TrainRequest
+from nids.report import exports
+from nids.schema import FEATURE_SET
 from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
@@ -51,7 +51,7 @@ def read(data: bytes) -> pd.DataFrame:
 
 
 def fake_assay(run: TrainingRun, run_id: str | None = None) -> SimpleNamespace:
-    """An Assay result shaped like :class:`graticule.scoring.ScoredBatch`: uploaded columns, then scoring columns."""
+    """An Assay result shaped like :class:`nids.scoring.ScoredBatch`: uploaded columns, then scoring columns."""
     n = 30
     rng = np.random.default_rng(3)
     p = rng.random(n)
@@ -66,7 +66,7 @@ def fake_assay(run: TrainingRun, run_id: str | None = None) -> SimpleNamespace:
 
 
 def fake_sweep(run: TrainingRun, flows: int = 3) -> SimpleNamespace:
-    """A simulation session shaped like :class:`graticule.simulate.SimulationSession`."""
+    """A simulation session shaped like :class:`nids.simulate.SimulationSession`."""
     log = pd.DataFrame({"seq": np.arange(flows), "tick": np.ones(flows, dtype=int), "row_id": np.arange(flows),
                         "true_label": ["Normal"] * flows, "predicted": ["Attack"] * flows,
                         "attack_probability": np.full(flows, 0.95), "confidence": np.full(flows, 0.95),
@@ -172,7 +172,7 @@ def test_export_items_say_what_is_missing(runs: dict[str, TrainingRun]) -> None:
     assert not items["assay"].available and "05 Assay" in items["assay"].missing
     assert not items["sweep"].available and "06 Sweep" in items["sweep"].missing
     assert not items["run_history"].available and "No fit" in items["run_history"].missing
-    assert items["leaderboard"].file_name == f"graticule-leaderboard-{run.run_id}.csv"
+    assert items["leaderboard"].file_name == f"nids-leaderboard-{run.run_id}.csv"
     foreign = {i.key: i for i in exports.export_items(run, assay=fake_assay(run, run_id="another"))}
     assert not foreign["assay"].available and "another run" in foreign["assay"].missing
     mine = {i.key: i for i in exports.export_items(run, assay=fake_assay(run), sweep=fake_sweep(run))}
@@ -210,11 +210,11 @@ def test_zip_holds_every_available_file_and_a_readme(runs: dict[str, TrainingRun
     RunHistory().record(run)
     evals = evaluate.evaluate_run(run)
     data = exports.bundle_zip(run, evaluations=evals, assay=fake_assay(run), sweep=fake_sweep(run),
-                              extra_files={"graticule-record-x.pdf": (b"%PDF-1.4 test", "The PDF record.")})
+                              extra_files={"nids-record-x.pdf": (b"%PDF-1.4 test", "The PDF record.")})
     names = exports.zip_names(data)
     expected = {exports.export_file_name(k, run.run_id) for k in ("leaderboard", "per_class", "predictions",
                                                                   "assay", "sweep")}
-    expected |= {exports.export_file_name("run_history", None), "graticule-record-x.pdf", exports.README_NAME}
+    expected |= {exports.export_file_name("run_history", None), "nids-record-x.pdf", exports.README_NAME}
     assert set(names) == expected
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         readme = archive.read(exports.README_NAME).decode("utf-8")
@@ -224,6 +224,8 @@ def test_zip_holds_every_available_file_and_a_readme(runs: dict[str, TrainingRun
                 assert archive.read(name).startswith(BOM)
                 pd.read_csv(io.BytesIO(archive.read(name)), encoding="utf-8-sig")
         assert run.run_id in readme and "No file here holds flow feature values" in readme
+        assert readme.startswith("NIDS measurement record exports\n")
+        assert "NIDS (Network Intrusion Detection System)" in readme
 
 
 def test_zip_names_a_table_that_failed_to_build(runs: dict[str, TrainingRun]) -> None:
@@ -242,8 +244,8 @@ def test_zip_names_a_table_that_failed_to_build(runs: dict[str, TrainingRun]) ->
 
 def test_real_scoring_and_simulation_objects_export(runs: dict[str, TrainingRun], tmp_path: Any) -> None:
     """The Assay and Sweep objects of the app itself (when those stations are present) export as well."""
-    scoring = pytest.importorskip("graticule.scoring")
-    simulate = pytest.importorskip("graticule.simulate")
+    scoring = pytest.importorskip("nids.scoring")
+    simulate = pytest.importorskip("nids.simulate")
     from tests.helpers import make_rows, write_cic_csv
 
     run = runs["binary"]

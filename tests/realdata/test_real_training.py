@@ -14,9 +14,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
-from graticule.models.train import TrainingData, TrainingRun, TrainRequest, build_training_data, train_all
-from graticule.schema import BENIGN
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from nids.models.train import TrainingData, TrainingRun, TrainRequest, build_training_data, train_all
+from nids.schema import BENIGN
 
 pytestmark = pytest.mark.realdata
 WEDNESDAY = "Wednesday-workingHours.pcap_ISCX.csv"

@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from graticule import theme, viz
-from graticule.data import prepare
-from graticule.data.synthetic import SYNTHETIC_CLASSES
-from graticule.settings import AppSettings, save_settings
+from nids import theme, viz
+from nids.data import prepare
+from nids.data.synthetic import SYNTHETIC_CLASSES
+from nids.settings import AppSettings, save_settings
 from tests.helpers import fake_generator, flow_row, make_rows, with_values, write_cic_csv
 from ui import data_cache, state
 

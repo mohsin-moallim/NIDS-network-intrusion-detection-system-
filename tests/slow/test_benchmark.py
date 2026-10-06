@@ -22,7 +22,7 @@ LIMITS = {"binary": 90.0, "multiclass": 180.0}
 
 def _bench_module() -> ModuleType:
     """Load scripts/bench.py as a module (the scripts folder is not a package)."""
-    spec = importlib.util.spec_from_file_location("graticule_bench_script", ROOT / "scripts" / "bench.py")
+    spec = importlib.util.spec_from_file_location("nids_bench_script", ROOT / "scripts" / "bench.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

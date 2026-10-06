@@ -27,9 +27,9 @@ once per run from the stored test-set probabilities and kept on the run; nothing
 
 Long measurements run as an :class:`EvaluationTask` (a daemon thread with progress, elapsed time and a cancel
 token, or inline on the calling thread). The task never touches the web framework; the UI polls its snapshot. An
-exclusive task holds the process-wide work slot of :mod:`graticule.models.jobs` while it runs, so it never runs
+exclusive task holds the process-wide work slot of :mod:`nids.models.jobs` while it runs, so it never runs
 alongside a fit or another exclusive measurement (a second one is turned away with
-:class:`~graticule.models.jobs.JobBusyError`).
+:class:`~nids.models.jobs.JobBusyError`).
 """
 
 from __future__ import annotations
@@ -58,12 +58,12 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import StratifiedKFold
 
-from graticule.data.sampling import apply_class_options
-from graticule.models.jobs import CancelToken, JobBusyError, TrainingCancelled, busy_message, claim_slot, release_slot
-from graticule.theme import CHANNEL_BY_KEY
+from nids.data.sampling import apply_class_options
+from nids.models.jobs import CancelToken, JobBusyError, TrainingCancelled, busy_message, claim_slot, release_slot
+from nids.theme import CHANNEL_BY_KEY
 
 if TYPE_CHECKING:
-    from graticule.models.train import TrainingRun
+    from nids.models.train import TrainingRun
 
 #: Channel keys in their fixed order (kept here as well, so this module never imports the trainer at load time:
 #: the trainer imports this module).
@@ -869,7 +869,7 @@ def _traffic_basis(run: "TrainingRun") -> tuple[np.ndarray | None, str | None]:
         return None, "The repeat counts kept with this run do not match its held-out rows."
     found = _sampling_scales(run)
     if found is None:
-        return None, ("This run does not record how 01 Sample thinned each class (it was fitted before Graticule "
+        return None, ("This run does not record how 01 Sample thinned each class (it was fitted before NIDS "
                       "kept those shares); fit it again to add the recorded-traffic estimate.")
     scales, merged = found
     labels = np.asarray(getattr(data, "detailed_test_labels", np.empty(0)), dtype=object).astype(str)
@@ -887,7 +887,7 @@ def _traffic_basis(run: "TrainingRun") -> tuple[np.ndarray | None, str | None]:
 @dataclass(frozen=True)
 class HeavyClass:
     """The heavily repeated flows of one class of the target (an entry of ``TrainingData.reports["heavy_flows"]``,
-    see :func:`graticule.models.train.heavy_flow_report`).
+    see :func:`nids.models.train.heavy_flow_report`).
 
     01 Sample knows how often the cleaned files recorded EVERY distinct flow it drew from, sampled or not, so these
     counts cover the flows the sample left out as well as those it kept. A flow is heavily repeated in a class when
@@ -1513,7 +1513,7 @@ def permutation_importance_for(
     times; the kernel SVM is held to 2,000 rows and 3 repeats. Features are scored on several threads
     (``joblib.parallel_config(backend="threading")``), except for the tree channels, whose models already predict on
     several threads. ``progress`` gets (message, fraction) after each scoring and ``cancel`` is checked before each
-    (raising :class:`~graticule.models.jobs.TrainingCancelled`).
+    (raising :class:`~nids.models.jobs.TrainingCancelled`).
 
     Returns one row per feature, largest drop first: ``feature``, ``importance`` (mean drop), ``std`` (spread over
     the repeats). ``attrs`` records ``key``, ``rows``, ``repeats``, ``baseline`` (balanced accuracy before any
@@ -1521,7 +1521,7 @@ def permutation_importance_for(
     """
     import joblib
 
-    from graticule.data.sampling import sample_positions
+    from nids.data.sampling import sample_positions
 
     started = time.perf_counter()
     result = run.channels[key]
@@ -1594,7 +1594,7 @@ def _cv_channels(run: "TrainingRun", channels: Sequence[str] | None) -> tuple[st
 
 def _cv_draw(run: "TrainingRun", max_rows: int) -> np.ndarray:
     """Positions (into the training split) of the rare-aware draw cross-validation runs on."""
-    from graticule.data.sampling import sample_positions
+    from nids.data.sampling import sample_positions
 
     y = _codes(run.data.y_train)
     picked, _ = sample_positions(y, min(int(max_rows), len(y)), int(run.request.seed))
@@ -1649,7 +1649,7 @@ def estimate_cv_seconds(run: "TrainingRun", k: int, max_rows: int = 50_000, *,
     kernel SVM, whose rows stay under its cap and whose time grows with the square of its rows. Scoring time is
     proportional to the rows scored. A rough guide only (the machine may be busier or idler than during the fit).
     """
-    from graticule.models.zoo import BuildContext
+    from nids.models.zoo import BuildContext
 
     try:
         plan = plan_cross_validation(run, k, max_rows, channels)
@@ -1707,8 +1707,8 @@ def cross_validate_run(
 
     The rows are a rare-aware draw of at most ``max_rows`` training rows (seeded with the run's seed). Folds are
     stratified and shuffled; ``k`` drops automatically when a class has fewer rows than folds (see
-    :func:`plan_cross_validation`). Every fold builds a fresh pipeline (:func:`graticule.models.zoo.build_estimator`)
-    with the run's options and fits it through :func:`graticule.models.train.fit_model`, with the same capped
+    :func:`plan_cross_validation`). Every fold builds a fresh pipeline (:func:`nids.models.zoo.build_estimator`)
+    with the run's options and fits it through :func:`nids.models.train.fit_model`, with the same capped
     balanced weights as the fit (recomputed on the fold), so the SVM cap, early stopping and calibration all come
     from the fold's own training part. The held-out test rows are never used.
 
@@ -1723,8 +1723,8 @@ def cross_validate_run(
     """
     import joblib
 
-    from graticule.models import zoo
-    from graticule.models.train import fit_model
+    from nids.models import zoo
+    from nids.models.train import fit_model
 
     started = time.perf_counter()
     plan = plan_cross_validation(run, k, max_rows, channels)
@@ -1868,9 +1868,9 @@ class EvaluationTask:
     ``"cancelled"`` (the work raised :class:`TrainingCancelled`, or returned after a cancel) or ``"failed"`` (with
     ``error``). Tasks are kept in a small process registry (:func:`get_task`) so a page can find one by its id.
 
-    An ``exclusive`` task takes the process-wide work slot (:func:`graticule.models.jobs.claim_slot`, described by
+    An ``exclusive`` task takes the process-wide work slot (:func:`nids.models.jobs.claim_slot`, described by
     ``holder``) when it starts and gives it back when it ends; :meth:`start` and :meth:`run_inline` raise
-    :class:`~graticule.models.jobs.JobBusyError` (and the task stays unstarted) while a fit or another exclusive
+    :class:`~nids.models.jobs.JobBusyError` (and the task stays unstarted) while a fit or another exclusive
     task holds it.
     """
 
@@ -1958,10 +1958,10 @@ class EvaluationTask:
             self._done.set()
 
     def start(self) -> None:
-        """Run the work on a daemon thread (raises :class:`~graticule.models.jobs.JobBusyError` when an exclusive
+        """Run the work on a daemon thread (raises :class:`~nids.models.jobs.JobBusyError` when an exclusive
         task finds the work slot taken)."""
         self._claim()
-        threading.Thread(target=self._execute, name=f"graticule-{self.task_id}", daemon=True).start()
+        threading.Thread(target=self._execute, name=f"nids-{self.task_id}", daemon=True).start()
 
     def run_inline(self) -> Any:
         """Run the work on the calling thread; returns ``result`` (None when it failed or was cancelled early)."""

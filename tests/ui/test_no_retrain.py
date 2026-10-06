@@ -3,7 +3,7 @@
 The test draws a small synthetic sample through 01 Sample, fits all five channels once through the 02 Fit form
 (``profile="test"`` models) and checks the readings, including the CH3 row-cap badge. It then changes every widget
 on the Fit page without submitting, visits every other station and changes each of its widgets in turn (rerunning
-after every change), and comes back to 02 Fit. Throughout, ``graticule.models.train.FIT_CALLS`` must not move,
+after every change), and comes back to 02 Fit. Throughout, ``nids.models.train.FIT_CALLS`` must not move,
 neither the training matrices nor a training job may be built again, ``prepare_dataset`` must not run again, and
 the stored run and every fitted estimator must stay the very same objects. Widgets are found generically, so
 stations built in later phases are covered as soon as they exist; 03 Measure, 04 Probe, 05 Assay, 06 Sweep and the
@@ -33,12 +33,12 @@ import pytest
 from PIL import Image
 from streamlit.testing.v1 import AppTest
 
-import graticule.settings as settings_mod
-from graticule import persist, viz
-from graticule.data import prepare
-from graticule.models import train
-from graticule.models.zoo import MODEL_KEYS
-from graticule.schema import FEATURES, LABEL
+import nids.settings as settings_mod
+from nids import persist, viz
+from nids.data import prepare
+from nids.models import train
+from nids.models.zoo import MODEL_KEYS
+from nids.schema import FEATURES, LABEL
 from tests.helpers import write_cic_csv
 from tests.ui.harness import (  # noqa: F401
     different_value,

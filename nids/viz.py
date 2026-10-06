@@ -2,7 +2,7 @@
 
 Every builder takes plain data plus a theme mode and returns an Altair chart with its data inlined, so the same
 definition renders in the browser (``st.altair_chart(chart, theme=None)``) and as a PNG for the PDF
-(:func:`to_png`, through vl-convert, with no browser involved). Colours and fonts come from :mod:`graticule.theme`.
+(:func:`to_png`, through vl-convert, with no browser involved). Colours and fonts come from :mod:`nids.theme`.
 Normal traffic is always drawn with circles and attacks with diamonds, so colour is never the only cue.
 """
 
@@ -17,8 +17,8 @@ import altair as alt
 import numpy as np
 import pandas as pd
 
-from graticule.schema import is_normal_traffic
-from graticule.theme import (
+from nids.schema import is_normal_traffic
+from nids.theme import (
     ATTACK_TYPES,
     CHANNEL_BY_KEY,
     CHANNELS,
@@ -45,7 +45,7 @@ _fonts_registered = False
 
 
 def base_config(chart: AnyChart, mode: Mode = "light", *, background: str | None = None, fit: bool = True) -> AnyChart:
-    """Apply Graticule's chart styling: body font for text, Instrument Sans titles, mono axis labels, hairline grid.
+    """Apply the NIDS chart styling: body font for text, Instrument Sans titles, mono axis labels, hairline grid.
 
     The background stays transparent unless ``background`` is given, so the chart sits on the page colour in both
     themes. Returns a configured copy (``chart`` itself is not changed). With ``fit`` (the default) a single or
@@ -400,7 +400,7 @@ def leaderboard_chart(
 ) -> alt.LayerChart:
     """Dot plot of every channel's scores: one row per metric, one mark per channel (its colour and marker).
 
-    ``board`` is a leaderboard table (:func:`graticule.evaluate.leaderboard`): a ``key`` column plus score columns.
+    ``board`` is a leaderboard table (:func:`nids.evaluate.leaderboard`): a ``key`` column plus score columns.
     ``metrics`` picks and orders the score columns (default: every known score column present, balanced accuracy
     first). The score axis is zoomed (:func:`score_domain`) and says so.
     """
@@ -935,8 +935,8 @@ def cv_spread_chart(
 ) -> alt.LayerChart:
     """Cross-validation spread per channel: mean (channel marker) with a bar of +/- one standard deviation.
 
-    ``summary`` is a cross-validation table (:func:`graticule.evaluate.cross_validate_run`) with ``key`` and
-    ``"<metric> mean"``/``"<metric> std"`` columns; ``folds`` (optional, :func:`graticule.evaluate.cv_fold_frame`)
+    ``summary`` is a cross-validation table (:func:`nids.evaluate.cross_validate_run`) with ``key`` and
+    ``"<metric> mean"``/``"<metric> std"`` columns; ``folds`` (optional, :func:`nids.evaluate.cv_fold_frame`)
     adds each fold's reading as a small hollow mark. The axis is zoomed and says so.
     """
     p = palette(mode)
@@ -1081,7 +1081,7 @@ def contribution_chart(
     before the label font has loaded, and the longest feature label (``Bwd Packet Length Mean = 1,897.9``) then
     renders wider than it was measured and would be cut at the left edge.
     """
-    from graticule.theme import DIVERGING
+    from nids.theme import DIVERGING
 
     p = palette(mode)
     ramp = DIVERGING["dark" if mode == "dark" else "light"]
@@ -1165,7 +1165,7 @@ def detections_chart(
     """Flows per tick of a live stream, split by the channel's verdict, over the latest ``window`` ticks.
 
     ``timeline`` holds one row per tick with ``tick``, ``normal``, ``attack_predicted`` and ``alerts`` counts (the
-    shape of :attr:`graticule.simulate.SimulationSession.timeline`). Each tick is one stacked bar: flows read as
+    shape of :attr:`nids.simulate.SimulationSession.timeline`). Each tick is one stacked bar: flows read as
     attack at the bottom (solid vermilion), flows read as normal above them (pale blue with an outline, like the
     hollow normal mark elsewhere). A warning-coloured triangle sits on each tick that raised alerts and a brass rule
     marks the newest tick. The axis always spans ``window`` ticks: it fills from the left, then scrolls.

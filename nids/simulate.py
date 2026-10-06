@@ -10,7 +10,7 @@ Two flow sources feed a :class:`SimulationSession`:
     other. Rows are drawn without replacement from each pool until it runs dry, then the pool is reshuffled and
     rows repeat; :attr:`ReplaySource.repeated` counts the repeats.
 :class:`SyntheticSource`
-    Fresh flows from the packet simulator (:func:`graticule.data.synthetic.generate`), for channels fitted on
+    Fresh flows from the packet simulator (:func:`nids.data.synthetic.generate`), for channels fitted on
     synthetic data. The flows pass the run's bad-value strategy (as at 01 Sample) and only flows of the run's
     classes are emitted.
 
@@ -23,12 +23,12 @@ running confusion counts, live accuracy (always equal to the accuracy over every
 accuracy (mean recall over the classes seen so far), a per-tick timeline, a bounded feed of the latest flows, a
 bounded list of alerts and a columnar log of the last :data:`LOG_CAP` flows (:meth:`SimulationSession.log_frame`).
 
-Alert rule (shared with 04 Probe and 05 Assay, :func:`graticule.models.verdict.alert_flags`): a flow raises an
+Alert rule (shared with 04 Probe and 05 Assay, :func:`nids.models.verdict.alert_flags`): a flow raises an
 alert when the channel's verdict is not normal traffic AND its attack probability (binary: P(Attack); multi-class:
 1 - P(BENIGN)) reaches the threshold.
 
 Everything is seeded: the same source options, seed, channel and batch sizes give the very same stream and the very
-same readings (forests score on one thread, see :func:`graticule.persist.deterministic`).
+same readings (forests score on one thread, see :func:`nids.persist.deterministic`).
 """
 
 from __future__ import annotations
@@ -43,16 +43,16 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
-from graticule.data import synthetic
-from graticule.data.clean import apply_nonfinite_strategy
-from graticule.models.train import _tidy_proba, score_in_blocks
-from graticule.models.verdict import alert_flags, attack_probability
-from graticule.persist import deterministic
-from graticule.schema import FEATURE_SET, LABEL, is_normal_traffic
-from graticule.theme import CHANNEL_BY_KEY
+from nids.data import synthetic
+from nids.data.clean import apply_nonfinite_strategy
+from nids.models.train import _tidy_proba, score_in_blocks
+from nids.models.verdict import alert_flags, attack_probability
+from nids.persist import deterministic
+from nids.schema import FEATURE_SET, LABEL, is_normal_traffic
+from nids.theme import CHANNEL_BY_KEY
 
 if TYPE_CHECKING:
-    from graticule.models.train import TrainingRun
+    from nids.models.train import TrainingRun
 
 SourceKind = Literal["replay", "synthetic"]
 

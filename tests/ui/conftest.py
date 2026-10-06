@@ -1,7 +1,7 @@
 """Setup shared by the headless Streamlit checks (``AppTest``).
 
 Every new ``AppTest`` session scans all installed Python packages for Streamlit's v2 custom-component manifests
-before its first run (about 0.15-0.2 s on this machine). Graticule uses no custom components and the installed
+before its first run (about 0.15-0.2 s on this machine). NIDS uses no custom components and the installed
 packages do not change during a test session, so the scan is made once and its result handed to every session:
 the same components (none, here) are registered as before, about 25 s sooner over the whole suite.
 

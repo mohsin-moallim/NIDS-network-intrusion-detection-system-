@@ -25,7 +25,7 @@ from typing import BinaryIO, Literal
 import numpy as np
 import pandas as pd
 
-from graticule.schema import FEATURE_SET, FEATURES, LABEL, normalize_label
+from nids.schema import FEATURE_SET, FEATURES, LABEL, normalize_label
 
 # Bump when reading or cleaning logic changes, so cached per-file results are rebuilt.
 READER_VERSION = "2"
@@ -49,7 +49,7 @@ _DECODE_HINTS = ("utf8", "utf-8", "decode", "codec", "encoding", "unicode")
 
 
 class DataFileError(ValueError):
-    """A file could not be read, or does not have the columns Graticule needs. The message is shown to the user."""
+    """A file could not be read, or does not have the columns NIDS needs. The message is shown to the user."""
 
 
 @dataclass
@@ -272,7 +272,7 @@ def _to_float32(column: pd.Series) -> tuple[np.ndarray, int]:
 
 
 def normalize_labels(values: pd.Series) -> pd.Series:
-    """Apply :func:`graticule.schema.normalize_label` to every value (once per distinct value); missing becomes ""."""
+    """Apply :func:`nids.schema.normalize_label` to every value (once per distinct value); missing becomes ""."""
     uniques = values.unique()
     mapping = {u: ("" if pd.isna(u) else normalize_label(u)) for u in uniques}
     return values.map(mapping).astype("str")
@@ -313,7 +313,7 @@ def read_flow_csv(
 ) -> tuple[pd.DataFrame, FileReadReport]:
     """Read one flow CSV (a path, raw bytes or an uploaded file object).
 
-    Returns a frame holding the known feature columns that are present, in :data:`graticule.schema.FEATURES`
+    Returns a frame holding the known feature columns that are present, in :data:`nids.schema.FEATURES`
     order and as float32, followed by ``Label`` (pandas ``str``, normalised) when the file has one. The frame's
     index is each row's 0-based position among the file's data rows, so provenance survives any later filtering.
     Rows whose label is empty are counted; they are dropped when ``require_label`` is True (training data) and
@@ -325,7 +325,7 @@ def read_flow_csv(
     data = _as_input(source)
     wide = wide_text_encoding(_first_bytes(data))
     if wide is not None:
-        raise DataFileError(f"{label} is saved as {wide} text, which Graticule does not read. Save it again as a "
+        raise DataFileError(f"{label} is saved as {wide} text, which NIDS does not read. Save it again as a "
                             "UTF-8 CSV (Windows-1252 and Latin-1 also work) and try once more.")
     raw, used_engine, used_encoding, note = _read_raw(data, engine, nrows)
     del data

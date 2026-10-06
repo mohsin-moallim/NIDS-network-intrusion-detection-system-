@@ -32,11 +32,11 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-import graticule.settings as settings_mod
-from graticule import evaluate, persist
-from graticule.data.prepare import DataRequest, prepare_dataset
-from graticule.models import train
-from graticule.models.train import TrainRequest, build_training_data, train_all
+import nids.settings as settings_mod
+from nids import evaluate, persist
+from nids.data.prepare import DataRequest, prepare_dataset
+from nids.models import train
+from nids.models.train import TrainRequest, build_training_data, train_all
 from tests.helpers import shared_fit, shared_sample
 from tests.ui.harness import (  # noqa: F401
     draw_synthetic_sample,
@@ -117,13 +117,13 @@ FRESH_PROCESS = r"""
 import pickle, sys
 from pathlib import Path
 
-import graticule.settings as settings_mod
+import nids.settings as settings_mod
 
 settings_file, models_dir, history_dir, out = (Path(a) for a in sys.argv[1:5])
 settings_mod.SETTINGS_FILE, settings_mod.MODELS_DIR, settings_mod.HISTORY_DIR = settings_file, models_dir, history_dir
 
-from graticule import evaluate
-from graticule.models import train
+from nids import evaluate
+from nids.models import train
 from tests.ui.harness import goto, new_app
 from tests.ui.test_saved_runs_measure import measure_snapshot
 from ui import state
@@ -152,7 +152,7 @@ class FreshProcess:
     def __init__(self, tmp_path: Path) -> None:
         self.out = tmp_path / "fresh_process.pickle"
         env = {k: v for k, v in os.environ.items() if k != settings_mod.ENV_DATA_DIR}
-        env.update(GRATICULE_SYNC_TRAINING="1", GRATICULE_TEST_PROFILE="1", PYTHONUTF8="1")
+        env.update(NIDS_SYNC_TRAINING="1", NIDS_TEST_PROFILE="1", PYTHONUTF8="1")
         self.process = subprocess.Popen(
             [sys.executable, "-c", FRESH_PROCESS, str(settings_mod.SETTINGS_FILE), str(settings_mod.MODELS_DIR),
              str(settings_mod.HISTORY_DIR), str(self.out)],

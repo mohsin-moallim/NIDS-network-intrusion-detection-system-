@@ -1,7 +1,7 @@
 # Data
 
-Graticule does not ship any network-flow data, and nothing in this folder is committed except this note.
-Git ignores every other file here and every `*.csv` file anywhere in the project.
+NIDS (Network Intrusion Detection System) does not ship any network-flow data, and nothing in this folder is
+committed except this note. Git ignores every other file here and every `*.csv` file anywhere in the project.
 
 ## Getting CIC-IDS2017
 
@@ -9,8 +9,8 @@ Git ignores every other file here and every `*.csv` file anywhere in the project
    <https://www.unb.ca/cic/datasets/ids-2017.html>
 2. From the download, take the **MachineLearningCSV** set: eight CSV files, one per capture session
    (Monday to Friday), about 0.85 GB together. Each file has 79 columns, 78 numeric flow features plus `Label`
-   (one feature, `Fwd Header Length`, appears twice, so Graticule works with 77 distinct features).
-3. Put the eight files in any folder you like, preferably outside this project. Graticule expects these names:
+   (one feature, `Fwd Header Length`, appears twice, so NIDS works with 77 distinct features).
+3. Put the eight files in any folder you like, preferably outside this project. NIDS expects these names:
 
    | File | Session | Contents |
    |---|---|---|
@@ -25,7 +25,7 @@ Git ignores every other file here and every `*.csv` file anywhere in the project
 
    Other CSV files in the same folder are listed too and can be sampled, provided they use the same columns.
 
-## Pointing Graticule at the files
+## Pointing NIDS at the files
 
 Use either of these (the in-app setting wins when both are present):
 
@@ -41,13 +41,13 @@ Use either of these (the in-app setting wins when both are present):
   `$env:` lasts for that PowerShell window only. The Bench shows which folder is in use, where the choice came
   from, and which of the eight files were found or are missing.
 
-Graticule only reads `*.csv` files that sit directly in that folder (sub-folders are not searched). It never copies,
+NIDS only reads `*.csv` files that sit directly in that folder (sub-folders are not searched). It never copies,
 moves or rewrites them. With no folder configured, the app runs on its built-in synthetic flow generator, which
 produces the same 77 feature columns.
 
 ## What the reader repairs
 
-The published files have a few known quirks. Graticule handles each of them while reading and reports what it did on
+The published files have a few known quirks. NIDS handles each of them while reading and reports what it did on
 the 01 Sample sheet:
 
 - column names with leading spaces (`" Destination Port"`) are trimmed;

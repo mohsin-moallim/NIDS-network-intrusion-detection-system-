@@ -1,9 +1,9 @@
 """07 Record station: the PDF measurement record of the current run, and CSV exports of every result.
 
 Nothing is computed while the page draws. The PDF is built only when "Build PDF record" is pressed, as an exclusive
-:class:`graticule.evaluate.EvaluationTask`: it takes the app's single work slot (so it never runs alongside a fit or
+:class:`nids.evaluate.EvaluationTask`: it takes the app's single work slot (so it never runs alongside a fit or
 a measurement), runs on a background thread with a progress panel that refreshes itself every second (inline when
-``GRATICULE_SYNC_TRAINING=1``, as in the headless tests), and can be cancelled. The finished PDF is kept in the
+``NIDS_SYNC_TRAINING=1``, as in the headless tests), and can be cancelled. The finished PDF is kept in the
 session for its download button. Each CSV download builds its bytes only when it is clicked. Nothing here fits a
 model.
 
@@ -21,12 +21,12 @@ from typing import Any
 
 import streamlit as st
 
-from graticule import evaluate
-from graticule.evaluate import EvaluationTask
-from graticule.models.jobs import JobBusyError, slot_holder, sync_training_requested
-from graticule.models.train import TrainingRun
-from graticule.report import exports
-from graticule.report import pdf as record_pdf
+from nids import evaluate
+from nids.evaluate import EvaluationTask
+from nids.models.jobs import JobBusyError, slot_holder, sync_training_requested
+from nids.models.train import TrainingRun
+from nids.report import exports
+from nids.report import pdf as record_pdf
 from ui import components, state
 from ui.stations import BY_KEY, PAGE_OBJECTS
 from ui.training_ui import format_elapsed
@@ -346,7 +346,7 @@ def _csv_section(run: TrainingRun | None) -> None:
     extra: dict[str, tuple[bytes, str]] = {}
     if run is not None and built is not None:
         extra[record_pdf.report_file_name(run.run_id)] = (built["data"], "The PDF measurement record of the run.")
-    stem = f"graticule-record-{run.run_id}" if run is not None else "graticule-exports"
+    stem = f"nids-record-{run.run_id}" if run is not None else "nids-exports"
     names = ", ".join(item.title.lower() for item in available)
     st.download_button("Download all as ZIP", data=lambda: exports.bundle_zip(run, items=available, extra_files=extra),
                        file_name=f"{stem}.zip", mime="application/zip", key="rec_dl_zip", on_click="ignore",

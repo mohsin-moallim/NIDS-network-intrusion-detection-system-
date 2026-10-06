@@ -23,12 +23,12 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from graticule import evaluate, viz
-from graticule.data.prepare import DataRequest, PreparedDataset
-from graticule.models import train
-from graticule.models.jobs import CancelToken, TrainingCancelled
-from graticule.models.train import TrainingRun, TrainRequest
-from graticule.report import pdf as rp
+from nids import evaluate, viz
+from nids.data.prepare import DataRequest, PreparedDataset
+from nids.models import train
+from nids.models.jobs import CancelToken, TrainingCancelled
+from nids.models.train import TrainingRun, TrainRequest
+from nids.report import pdf as rp
 from tests.helpers import shared_fit, shared_sample
 
 pytestmark = pytest.mark.unit
@@ -225,7 +225,7 @@ def multiclass_run(prepared: PreparedDataset) -> TrainingRun:
 
 
 def fake_cv(run: TrainingRun) -> pd.DataFrame:
-    """A cross-validation table shaped like :func:`graticule.evaluate.cross_validate_run` output."""
+    """A cross-validation table shaped like :func:`nids.evaluate.cross_validate_run` output."""
     rows = []
     folds = []
     for key in ("forest", "logreg"):
@@ -242,7 +242,7 @@ def fake_cv(run: TrainingRun) -> pd.DataFrame:
 
 
 def fake_permutation(run: TrainingRun) -> pd.DataFrame:
-    """A permutation-importance table shaped like :func:`graticule.evaluate.permutation_importance_for` output."""
+    """A permutation-importance table shaped like :func:`nids.evaluate.permutation_importance_for` output."""
     names = list(run.data.feature_names)
     frame = pd.DataFrame({"feature": pd.Series(names, dtype="str"),
                           "importance": np.linspace(0.2, 0.0, len(names)), "std": np.full(len(names), 0.01)})
@@ -251,7 +251,7 @@ def fake_permutation(run: TrainingRun) -> pd.DataFrame:
 
 
 def fake_assay(run: TrainingRun, run_id: str | None = None) -> SimpleNamespace:
-    """An Assay result shaped like :class:`graticule.scoring.ScoredBatch` (uploaded columns plus scoring columns)."""
+    """An Assay result shaped like :class:`nids.scoring.ScoredBatch` (uploaded columns plus scoring columns)."""
     n = 40
     rng = np.random.default_rng(1)
     attack = rng.random(n)
@@ -267,7 +267,7 @@ def fake_assay(run: TrainingRun, run_id: str | None = None) -> SimpleNamespace:
 
 
 def fake_sweep(run: TrainingRun) -> SimpleNamespace:
-    """A simulation session shaped like :class:`graticule.simulate.SimulationSession`."""
+    """A simulation session shaped like :class:`nids.simulate.SimulationSession`."""
     stats = SimpleNamespace(emitted=500, correct=470, live_accuracy=0.94, live_balanced_accuracy=0.92,
                             confusion=np.array([[300, 10], [20, 170]]), alerts_total=150, ticks=10)
     source = SimpleNamespace(describe=lambda: "Replay of 748 held-out rows (natural attack share)")
@@ -335,7 +335,7 @@ _FAKE_PNGS: list[int] = [0]
 
 
 def fake_png(chart: Any, scale: float = 2, *, background: str | None = None) -> bytes:
-    """Stand-in for :func:`graticule.viz.to_png`: checks the chart's spec, returns a small PNG of the chart's width.
+    """Stand-in for :func:`nids.viz.to_png`: checks the chart's spec, returns a small PNG of the chart's width.
 
     Every picture differs (one pixel carries a counter), so the PDF embeds each one rather than sharing one image.
     """
@@ -380,9 +380,10 @@ def test_binary_record_has_every_section_in_its_outline(binary_record: dict[str,
 def test_key_text_is_on_the_pages(binary_record: dict[str, Any], binary_run: TrainingRun) -> None:
     text = binary_record["text"]
     pages = binary_record["report"].pages
-    for phrase in ("MEASUREMENT RECORD", "Graticule", "A measuring bench for training",
-                   "Contents", "Sample sheet", "Fit settings", "Readings", "Confusion matrices", "Curves",
-                   "Feature importance", "Timing", "Cross-validation", "Assay", "Sweep", "Notes and limitations",
+    for phrase in ("MEASUREMENT RECORD", "NIDS", "Network Intrusion Detection System", "NIDS measurement record",
+                   "A measuring bench for training", "Contents", "Sample sheet", "Fit settings", "Readings",
+                   "Confusion matrices", "Curves", "Feature importance", "Timing", "Cross-validation", "Assay",
+                   "Sweep", "Notes and limitations",
                    binary_run.run_id, "Consensus", "Balanced accuracy", "Bal. acc.", "CH1 Random forest",
                    "CH5 Logistic regression", "Sharafaldin", "ICISSP", "upload.csv", "Heartbleed",
                    f"page 1 of {pages}", f"page {pages} of {pages}", "Normal traffic", "Attack",

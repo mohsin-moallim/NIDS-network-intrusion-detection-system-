@@ -26,15 +26,15 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from graticule import APP_NAME, __version__, evaluate
-from graticule.models import verdict
-from graticule.schema import FEATURE_SET, LABEL
+from nids import APP_FULL_NAME, APP_NAME, __version__, evaluate
+from nids.models import verdict
+from nids.schema import FEATURE_SET, LABEL
 
 if TYPE_CHECKING:
-    from graticule.data.prepare import PreparedDataset
-    from graticule.evaluate import ChannelEvaluation, TrafficEvaluation
-    from graticule.history import RunHistory
-    from graticule.models.train import TrainingRun
+    from nids.data.prepare import PreparedDataset
+    from nids.evaluate import ChannelEvaluation, TrafficEvaluation
+    from nids.history import RunHistory
+    from nids.models.train import TrainingRun
 
 #: Text encoding of every CSV export (UTF-8 with a byte-order mark).
 CSV_ENCODING = "utf-8-sig"
@@ -102,7 +102,7 @@ def consensus_metrics(run: "TrainingRun", keys: Sequence[str] | None = None) -> 
 
     ``keys`` picks the channels (default: every fitted one with stored probabilities). Returns None with fewer
     than two such channels or no held-out rows. The dict holds the metrics of
-    :func:`graticule.evaluate.classification_metrics` plus ``voters`` (channels combined) and ``unanimous`` (share
+    :func:`nids.evaluate.classification_metrics` plus ``voters`` (channels combined) and ``unanimous`` (share
     of held-out rows on which every channel read the consensus class).
     """
     found = _combined(run, keys)
@@ -135,10 +135,10 @@ def _combined(run: "TrainingRun", keys: Sequence[str] | None) -> tuple[Any, list
 
 def consensus_traffic_metrics(run: "TrainingRun", keys: Sequence[str] | None = None) -> dict[str, Any] | None:
     """The combined verdict's readings weighted to the recorded traffic (see
-    :func:`graticule.evaluate.traffic_weights`): the keys of
-    :func:`graticule.evaluate.weighted_classification_metrics` plus ``voters``, ``flows`` (the summed weight),
-    ``errors`` (:func:`graticule.evaluate.weighted_standard_errors`) and ``bounds`` (the heavy-flow ranges of
-    :func:`graticule.evaluate.heavy_flow_bounds`, empty when the run does not record them). None when the run has no
+    :func:`nids.evaluate.traffic_weights`): the keys of
+    :func:`nids.evaluate.weighted_classification_metrics` plus ``voters``, ``flows`` (the summed weight),
+    ``errors`` (:func:`nids.evaluate.weighted_standard_errors`) and ``bounds`` (the heavy-flow ranges of
+    :func:`nids.evaluate.heavy_flow_bounds`, empty when the run does not record them). None when the run has no
     traffic weights or fewer than two channels with stored probabilities."""
     weights = evaluate.traffic_weights(run)
     found = _combined(run, keys) if weights is not None else None
@@ -161,8 +161,8 @@ def belongs_to_run(obj: Any, run: "TrainingRun | None") -> bool:
     A fit and its copy loaded from disk share one run id but are different channel sets (the copy holds CH3 only
     when it was saved by choice, and may lack its held-out rows), so the run OBJECT is compared whenever ``obj`` can
     tell: through its
-    ``made_with(run)`` method (a :class:`graticule.scoring.ScoredBatch`) or its ``run`` attribute (a
-    :class:`graticule.simulate.SimulationSession`). An object that only names its run (``run_id``) is compared by
+    ``made_with(run)`` method (a :class:`nids.scoring.ScoredBatch`) or its ``run`` attribute (a
+    :class:`nids.simulate.SimulationSession`). An object that only names its run (``run_id``) is compared by
     id; else its class names are compared with the run's when they can be read (an Assay batch's ``prob_<class>``
     columns, a session's ``classes``); an object that shows none of these is taken to belong.
     """
@@ -205,7 +205,7 @@ def leaderboard_frame(run: "TrainingRun", evaluations: Mapping[str, "ChannelEval
     its timing and row columns stay empty. It is left out with fewer than two channels or ``consensus=False``.
 
     With ``traffic`` (the default) and when the run can be weighted to its recorded traffic, the recorded-traffic
-    estimate follows in extra columns (:func:`graticule.evaluate.traffic_columns`): ``traffic_flows_represented``
+    estimate follows in extra columns (:func:`nids.evaluate.traffic_columns`): ``traffic_flows_represented``
     and one ``traffic_<metric>`` column per score, their standard errors and the heavy-flow ranges (``_low`` and
     ``_high``), for every channel and the consensus. The rows keep the distinct-flow order; the other columns are
     unchanged. Without the estimate the columns are left out.
@@ -261,7 +261,7 @@ def per_class_table(evaluations: Mapping[str, "ChannelEvaluation"],
                     traffic: Mapping[str, "TrafficEvaluation"] | None = None) -> pd.DataFrame:
     """Every channel's per-class readings, stacked (channel order, then class order).
 
-    With ``traffic`` (:func:`graticule.evaluate.traffic_readings`), the recorded-traffic estimate of each channel
+    With ``traffic`` (:func:`nids.evaluate.traffic_readings`), the recorded-traffic estimate of each channel
     and class follows in the columns of :data:`TRAFFIC_PER_CLASS_EXPORT` (``traffic_flows`` is the class's estimated
     recorded flows).
     """
@@ -295,7 +295,7 @@ def predictions_frame(run: "TrainingRun", *, prepared: "PreparedDataset | None" 
     }
     if (n and prepared is not None and run.data_request.source == "cicids"
             and getattr(prepared, "fingerprint", None) == run.dataset_fingerprint):
-        from graticule.data.prepare import FILE_COL, ROW_COL
+        from nids.data.prepare import FILE_COL, ROW_COL
 
         rows = np.asarray(data.test_rows, dtype=np.int64)
         columns["source_file"] = prepared.frame[FILE_COL].astype("str").to_numpy()[rows]
@@ -340,8 +340,8 @@ def cross_validation_folds(cv: pd.DataFrame) -> pd.DataFrame:
 
 
 def history_frame(history: "RunHistory | None" = None, limit: int | None = None) -> pd.DataFrame:
-    """Every line of the run history, newest first (see :class:`graticule.history.RunHistory`)."""
-    from graticule.history import RunHistory
+    """Every line of the run history, newest first (see :class:`nids.history.RunHistory`)."""
+    from nids.history import RunHistory
 
     return (history or RunHistory()).list(limit)
 
@@ -504,9 +504,9 @@ EXPORTS: dict[str, tuple[str, str]] = {
 
 
 def export_file_name(key: str, run_id: str | None) -> str:
-    """File name of an export, e.g. ``graticule-leaderboard-20261001-153012-ab12.csv``."""
+    """File name of an export, e.g. ``nids-leaderboard-20261001-153012-ab12.csv``."""
     stem = key.replace("_", "-")
-    return f"graticule-{stem}-{run_id}.csv" if run_id else f"graticule-{stem}.csv"
+    return f"nids-{stem}-{run_id}.csv" if run_id else f"nids-{stem}.csv"
 
 
 def _item(key: str, run_id: str | None, build: Callable[[], bytes] | None, missing: str = "") -> ExportItem:
@@ -518,7 +518,7 @@ def _item(key: str, run_id: str | None, build: Callable[[], bytes] | None, missi
 
 def _history_lines(history: "RunHistory | None") -> int | None:
     """Lines in the run history, or None when the file cannot be read."""
-    from graticule.history import RunHistory
+    from nids.history import RunHistory
 
     try:
         return (history or RunHistory()).count()
@@ -625,7 +625,8 @@ def readme_text(items: Sequence[ExportItem], run: "TrainingRun | None", *,
     record) to a one-line description.
     """
     when = (built_utc or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [f"{APP_NAME} {__version__} - measurement record exports", "=" * 48, ""]
+    lines = [f"{APP_NAME} measurement record exports", "=" * 48, "",
+             f"App:     {APP_NAME} ({APP_FULL_NAME}) {__version__}"]
     if run is not None:
         channels = ", ".join(evaluate.channel_label(k) for k in run.ok_channels())
         lines += [f"Run:     {run.run_id}", f"Fitted:  {run.created_utc}",

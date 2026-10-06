@@ -21,11 +21,11 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import pandas as pd
 
-from graticule.schema import FEATURES, LABEL
+from nids.schema import FEATURES, LABEL
 
 if TYPE_CHECKING:
-    from graticule.data.prepare import DataRequest, PreparedDataset
-    from graticule.models.train import TrainingRun, TrainRequest
+    from nids.data.prepare import DataRequest, PreparedDataset
+    from nids.models.train import TrainingRun, TrainRequest
 
 LabelStyle = Literal["fffd", "cp1252", "clean"]
 REPEATED = "Fwd Header Length"
@@ -179,7 +179,7 @@ def default_rows() -> list[dict[str, object]]:
 
 
 def feature_frame(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
-    """Rows as an in-memory frame shaped like :func:`graticule.data.reader.read_flow_csv` output."""
+    """Rows as an in-memory frame shaped like :func:`nids.data.reader.read_flow_csv` output."""
     filled = []
     for index, source in enumerate(rows):
         row = flow_row(str(source.get(LABEL, "BENIGN")), index)
@@ -193,7 +193,7 @@ def feature_frame(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
 
 
 def fake_generator(n_flows: int, *, seed: int, attack_share: float = 0.35, blur: float = 0.04) -> pd.DataFrame:
-    """Stand-in for ``graticule.data.synthetic.generate`` with the agreed output shape (for isolated tests)."""
+    """Stand-in for ``nids.data.synthetic.generate`` with the agreed output shape (for isolated tests)."""
     rng = np.random.default_rng(seed)
     kinds = ["Flood", "Slow Drip", "Sweep", "Credential Guess", "Web Injection"]
     is_attack = rng.random(n_flows) < attack_share
@@ -214,7 +214,7 @@ _SHARED_FITS: dict[tuple[str, str, str], "TrainingRun"] = {}
 def shared_sample(request: "DataRequest") -> "PreparedDataset":
     """``prepare_dataset(request)``, made once per test session and handed to every test that asks for the same
     request (a synthetic one, in practice). The sample is shared, so it must never be changed."""
-    from graticule.data.prepare import prepare_dataset
+    from nids.data.prepare import prepare_dataset
 
     key = json.dumps(asdict(request), sort_keys=True, default=str)
     if key not in _SHARED_SAMPLES:
@@ -230,7 +230,7 @@ def shared_fit(prepared: "PreparedDataset", request: "TrainRequest") -> "Trainin
     and bundle path a test leaves on it stay with that test, sharing the fitted channels, which nothing changes
     after the fit.
     """
-    from graticule.models.train import build_training_data, train_all
+    from nids.models.train import build_training_data, train_all
 
     key = (json.dumps(asdict(prepared.request), sort_keys=True, default=str), prepared.fingerprint,
            json.dumps(request.to_dict(), sort_keys=True))

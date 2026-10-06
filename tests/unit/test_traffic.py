@@ -22,13 +22,13 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from graticule import evaluate, persist, viz
-from graticule.data.prepare import DataRequest, PreparedDataset, prepare_dataset
-from graticule.data.reader import read_flow_csv
-from graticule.models import train
-from graticule.models.train import TrainingRun, TrainRequest, build_training_data, train_all
-from graticule.report import exports
-from graticule.report import pdf as rp
+from nids import evaluate, persist, viz
+from nids.data.prepare import DataRequest, PreparedDataset, prepare_dataset
+from nids.data.reader import read_flow_csv
+from nids.models import train
+from nids.models.train import TrainingRun, TrainRequest, build_training_data, train_all
+from nids.report import exports
+from nids.report import pdf as rp
 from tests.helpers import make_rows, with_values, write_cic_csv
 
 pytestmark = pytest.mark.unit
